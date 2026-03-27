@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ネコゲーム - 2026-03-27</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* スクロールバー非表示 */
+            background-color: #f0f0f0; /* ページの背景色 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh; /* 画面いっぱいに広がるように */
+            cursor: default; /* デフォルトカーソル */
+            /* 選択とタッチ時のハイライトを無効化 */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: rgba(0,0,0,0);
+        }
+        canvas {
+            display: block; /* 余白をなくす */
+            background-color: #87CEEB; /* 空のような背景色 */
+            touch-action: none; /* ピンチズームやデフォルトスクロールなどを無効化 */
+            /* 画像がピクセル化されないように（絵文字描画ではあまり関係ないが念のため） */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let player;
+        let foods = []; // 良いおやつ (例: 🐟)
+        let poisons = []; // 悪いおやつ (例: 💀)
+        let score = 0;
+        let lives = 3;
+        let gameOver = false;
+        let lastFoodSpawnTime = 0; // おやつ生成の時間管理
+        let animationFrameId; // requestAnimationFrameのID
+
+        // ゲーム定数 (Canvasサイズに応じて初期化時に設定)
+        let PLAYER_SIZE;
+        let PLAYER_SPEED;
+        let FALLING_ITEM_SIZE;
+        let FALLING_ITEM_BASE_SPEED; // 基本落下速度
+        let SPAWN_INTERVAL = 700; // おやつ生成間隔 (ms)
+        let FONT_SIZE_LARGE;
+        let FONT_SIZE_MEDIUM;
+        let FONT_SIZE_SMALL;
+
+        // レスポンシブ対応のためのCanvasサイズとゲーム定数の設定
+        function setCanvasSize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            // 定数の設定 (Canvasの短辺を基準に)
+            const minDim = Math.min(canvas.width, canvas.height);
+            PLAYER_SIZE = minDim * 0.1; // プレイヤーのサイズ
+            PLAYER_SPEED = canvas.width * 0.008; // プレイヤーの移動速度
+            FALLING_ITEM_SIZE = minDim * 0.07; // 落下アイテムのサイズ
+            FALLING_ITEM_BASE_SPEED = canvas.height * 0.003; // 落下アイテムの基本速度
+            FONT_SIZE_LARGE = minDim * 0.1; // ゲームオーバーなどの大きな文字
+            FONT_SIZE_MEDIUM = minDim * 0.05; // リスタートなどの一般的な文字
+            FONT_SIZE_SMALL = minDim * 0.03; // スコア、ライフなどの小さな文字
+
+            // プレイヤー位置の調整 (画面リサイズ時に画面下部に留まるように)
+            if (player) {
+                player.y = canvas.height - PLAYER_SIZE * 1.5; // 画面下部からプレイヤーサイズの1.5倍上に固定
+                // プレイヤーが画面外に出ないようにx座標を調整
+                player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+            }
+        }
+
+        // プレイヤーオブジェクト
+        class Player {
+            constructor() {
+                this.width = PLAYER_SIZE;
+                this.height = PLAYER_SIZE;
+                this.x = canvas.width / 2 - this.width / 2; // 中央に配置
+                this.y = canvas.height - this.height * 1.5; // 画面下部に配置
+                this.speed = PLAYER_SPEED;
+                this.dx = 0; // 移動方向 (-1:左, 0:停止, 1:右)
+            }
+
+            // プレイヤーを描画
+            draw() {
+                ctx.font = `${this.width}px serif`; // フォントサイズをプレイヤーサイズに合わせる
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('🐱', this.x + this.width / 2, this.y + this.height / 2); // 猫の絵文字
+            }
+
+            // プレイヤーの状態を更新
+            update() {
+                this.x += this.dx * this.speed;
+
+                // 画面端での制限
+                if (this.x < 0) {
+                    this.x = 0;
+                }
+                if (this.x + this.width > canvas.width) {
+                    this.x = canvas.width - this.width;
+                }
+            }
+        }
+
+        // 落下アイテムオブジェクト
+        class FallingItem {
+            constructor(type) { // type: 'good' or 'bad'
+                this.width = FALLING_ITEM_SIZE;
+                this.height = FALLING_ITEM_SIZE;
+                this.x = Math.random() * (canvas.width - this.width); // ランダムなX座標
+                this.y = -this.height; // 画面上部から出現
+                this.speed = FALLING_ITEM_BASE_SPEED + Math.random() * (FALLING_ITEM_BASE_SPEED / 2); // 基本速度にランダム性を加える
+                this.type = type;
+                this.emoji = (type === 'good') ? '🐟' : '💀'; // 良いおやつは魚、悪いおやつはドクロ
+            }
+
+            // 落下アイテムを描画
+            draw() {
+                ctx.font = `${this.width}px serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.emoji, this.x + this.width / 2, this.y + this.height / 2);
+            }
+
+            // 落下アイテムの状態を更新
+            update() {
+                this.y += this.speed;
+            }
+        }
+
+        // ゲームの初期化
+        function initGame() {
+            setCanvasSize(); // ゲーム開始時にキャンバスサイズと定数を設定
+            player = new Player();
+            foods = [];
+            poisons = [];
+            score = 0;
+            lives = 3;
+            gameOver = false;
+            lastFoodSpawnTime = performance.now(); // ゲーム開始時刻で初期化
+
+            // 既存のアニメーションフレームがあればキャンセル
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            gameLoop(); // 新しいゲームループを開始
+        }
+
+        // ゲームループ
+        function gameLoop(currentTime) {
+            if (gameOver) {
+                draw(); // ゲームオーバー時も最後の状態を描画して停止
+                return;
+            }
+
+            update(currentTime);
+            draw();
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // ゲームの状態を更新
+        function update(currentTime) {
+            player.update();
+
+            // おやつ生成ロジック
+            if (currentTime - lastFoodSpawnTime > SPAWN_INTERVAL) {
+                const itemType = Math.random() < 0.7 ? 'good' : 'bad'; // 70%で良いおやつ、30%で悪いおやつ
+                if (itemType === 'good') {
+                    foods.push(new FallingItem('good'));
+                } else {
+                    poisons.push(new FallingItem('bad'));
+                }
+                lastFoodSpawnTime = currentTime;
+            }
+
+            // 良いおやつの更新と衝突判定
+            foods = foods.filter(food => {
+                food.update();
+                // プレイヤーとの衝突判定 (AABB衝突)
+                if (
+                    player.x < food.x + food.width &&
+                    player.x + player.width > food.x &&
+                    player.y < food.y + food.height &&
+                    player.y + player.height > food.y
+                ) {
+                    score++;
+                    return false; // 衝突したおやつは削除
+                }
+                // 画面外に出たおやつは削除
+                return food.y < canvas.height;
+            });
+
+            // 悪いおやつの更新と衝突判定
+            poisons = poisons.filter(poison => {
+                poison.update();
+                // プレイヤーとの衝突判定 (AABB衝突)
+                if (
+                    player.x < poison.x + poison.width &&
+                    player.x + player.width > poison.x &&
+                    player.y < poison.y + poison.height &&
+                    player.y + player.height > poison.y
+                ) {
+                    lives--;
+                    if (lives <= 0) {
+                        gameOver = true; // ライフが0になったらゲームオーバー
+                    }
+                    return false; // 衝突したおやつは削除
+                }
+                // 画面外に出たおやつは削除
+                return poison.y < canvas.height;
+            });
+        }
+
+        // 全ての要素を描画
+        function draw() {
+            // 背景クリア
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // プレイヤー描画
+            player.draw();
+
+            // おやつ描画
+            foods.forEach(food => food.draw());
+            poisons.forEach(poison => poison.draw());
+
+            // スコアとライフ表示
+            ctx.fillStyle = 'black';
+            ctx.font = `${FONT_SIZE_SMALL}px Arial`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(`Score: ${score}`, FONT_SIZE_SMALL * 0.5, FONT_SIZE_SMALL * 0.5);
+            ctx.textAlign = 'right';
+            ctx.fillText(`Lives: ${lives}`, canvas.width - FONT_SIZE_SMALL * 0.5, FONT_SIZE_SMALL * 0.5);
+
+            // ゲームオーバー表示
+            if (gameOver) {
+                ctx.fillStyle = 'red';
+                ctx.font = `${FONT_SIZE_LARGE}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - FONT_SIZE_LARGE / 2);
+
+                ctx.fillStyle = 'black';
+                ctx.font = `${FONT_SIZE_MEDIUM}px Arial`;
+                ctx.fillText('Tap or Click to Restart', canvas.width / 2, canvas.height / 2 + FONT_SIZE_LARGE / 2);
+            }
+        }
+
+        // イベントリスナー設定
+
+        // PC向けキーボード操作
+        document.addEventListener('keydown', e => {
+            if (gameOver && (e.key === ' ' || e.key === 'Enter')) {
+                 e.preventDefault(); // スペースキーによるスクロール防止
+                 initGame();
+                 return;
+            }
+            if (!gameOver) {
+                if (e.key === 'ArrowLeft' || e.key === 'a') {
+                    player.dx = -1;
+                } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                    player.dx = 1;
+                }
+            }
+        });
+
+        document.addEventListener('keyup', e => {
+            if (!gameOver) {
+                if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'ArrowRight' || e.key === 'd') {
+                    player.dx = 0;
+                }
+            }
+        });
+
+        // PC向けマウスクリック/ドラッグ、スマートフォン向けタッチ操作
+        let isDragging = false; // ドラッグ中かどうかを示すフラグ
+
+        canvas.addEventListener('mousedown', e => {
+            if (gameOver) {
+                initGame();
+                return;
+            }
+            isDragging = true;
+            // Canvas要素内の相対的なx座標を計算
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            player.x = mouseX - player.width / 2; // カーソルがプレイヤーの中央に来るように調整
+        });
+
+        canvas.addEventListener('mousemove', e => {
+            if (!gameOver && isDragging) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                player.x = mouseX - player.width / 2;
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+        
+        canvas.addEventListener('mouseleave', () => { // マウスがcanvas外に出たらドラッグ解除
+            isDragging = false;
+        });
+
+
+        // タッチイベント (passive: false で preventDefault() を有効にする)
+        canvas.addEventListener('touchstart', e => {
+            e.preventDefault(); // ブラウザのデフォルト動作（スクロール、ピンチズームなど）を抑制
+            if (gameOver) {
+                initGame();
+                return;
+            }
+            isDragging = true;
+            const touch = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            const touchX = touch.clientX - rect.left;
+            player.x = touchX - player.width / 2; // タッチした場所にプレイヤーの中央が来るように移動
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', e => {
+            e.preventDefault(); // ブラウザのデフォルト動作を抑制
+            if (!gameOver && isDragging) {
+                const touch = e.touches[0];
+                const rect = canvas.getBoundingClientRect();
+                const touchX = touch.clientX - rect.left;
+                player.x = touchX - player.width / 2;
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => {
+            isDragging = false;
+        });
+
+        // ウィンドウリサイズイベント
+        window.addEventListener('resize', () => {
+            setCanvasSize();
+            draw(); // リサイズ後に一度描画を更新して見た目を整える
+        });
+
+        // ゲーム開始
+        initGame();
+
+    </script>
+</body>
+</html>
