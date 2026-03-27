@@ -36,16 +36,16 @@ canvas { display: block; }
 
 <div id="title-screen">
   <h1>DODGE!</h1>
-  <div class="sub">- Day 2: Enemy Variety & One-Shot Difficulty -</div>
+  <div class="sub">- Day 3: Power-up Items: HP, Speed, Shield -</div>
   <button class="start-btn" onclick="startGame()">START</button>
 </div>
 
 <canvas id="game"></canvas>
 <div id="ui">
   <div id="score">SCORE: 0</div>
-  <div id="hp">HP: ❤</div>
+  <div id="hp-display">HP: ❤</div>
 </div>
-<div id="devlog-info">Daily Game Dev - v0.0.2</div>
+<div id="devlog-info">Daily Game Dev - v0.0.3</div>
 
 <script>
 // === Canvas Setup ===
@@ -61,7 +61,8 @@ window.addEventListener('resize', () => {
 // === Game State ===
 let gameRunning = false;
 let score = 0;
-let hp = 1; // 1デスゲームのためHPを1に設定
+const PLAYER_MAX_HP = 2; // プレイヤーの最大HPを設定
+let hp = PLAYER_MAX_HP;
 let gameOver = false;
 
 // Player
@@ -69,9 +70,15 @@ const player = {
   x: canvas.width / 2,
   y: canvas.height / 2,
   size: 16,
-  speed: 4,
+  baseSpeed: 4, // 基本の移動速度
+  speed: 4, // 現在の移動速度
   color: '#00d2ff',
   trail: [],
+  // パワーアップ状態
+  shieldActive: false,
+  shieldTimer: 0,
+  speedBoostActive: false,
+  speedBoostTimer: 0,
 };
 
 // Input
@@ -140,20 +147,56 @@ function spawnEnemy() {
   });
 }
 
+// Power-ups
+let powerUps = [];
+const POWERUP_TYPE_HP = 'hp';
+const POWERUP_TYPE_SPEED = 'speed';
+const POWERUP_TYPE_SHIELD = 'shield';
+const POWERUP_SIZE = 12;
+const POWERUP_LIFE = 600; // frames (10 seconds)
+const POWERUP_SPAWN_CHANCE_ENEMY_REMOVED = 0.05; // 敵が画面外に出るか衝突で消える際にパワーアップがドロップする確率
+
+const SHIELD_DURATION = 600; // frames (10 seconds)
+const SPEED_BOOST_DURATION = 400; // frames (6.6 seconds)
+const PLAYER_BOOSTED_SPEED = 6;
+
+function spawnPowerUp(x, y) {
+  const types = [POWERUP_TYPE_HP, POWERUP_TYPE_SPEED, POWERUP_TYPE_SHIELD];
+  const type = types[Math.floor(Math.random() * types.length)];
+  
+  let color;
+  if (type === POWERUP_TYPE_HP) {
+    color = '#00ff7f'; // Spring Green
+  } else if (type === POWERUP_TYPE_SPEED) {
+    color = '#ffcc00'; // Gold
+  } else { // POWERUP_TYPE_SHIELD
+    color = '#8a2be2'; // Blue Violet
+  }
+
+  powerUps.push({
+    x, y,
+    size: POWERUP_SIZE,
+    type: type,
+    color: color,
+    life: POWERUP_LIFE,
+    pulsate: Math.random() * Math.PI * 2, // 脈動アニメーション用
+  });
+}
+
 // Particles
 let particles = [];
-function spawnParticles(x, y, color, count) {
+function spawnParticles(x, y, color, count, sizeMin=2, sizeMax=3, speedMin=1, speedMax=3, lifeMin=30, lifeMax=20) {
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 3 + 1;
+    const speed = Math.random() * (speedMax - speedMin) + speedMin;
     particles.push({
       x, y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      life: 30 + Math.random() * 20,
-      maxLife: 50,
+      life: lifeMin + Math.random() * lifeMax,
+      maxLife: lifeMin + lifeMax,
       color,
-      size: 2 + Math.random() * 3,
+      size: sizeMin + Math.random() * sizeMax,
     });
   }
 }
@@ -161,6 +204,12 @@ function spawnParticles(x, y, color, count) {
 // === Update ===
 function update() {
   if (gameOver) return;
+
+  // Player speed management
+  player.speed = player.baseSpeed;
+  if (player.speedBoostActive) {
+    player.speed = PLAYER_BOOSTED_SPEED;
+  }
 
   // Player movement
   let dx = 0, dy = 0;
@@ -173,7 +222,7 @@ function update() {
     const tdx = touchTarget.x - player.x;
     const tdy = touchTarget.y - player.y;
     const dist = Math.sqrt(tdx * tdx + tdy * tdy);
-    if (dist > 8) { // Only move if touch is far enough
+    if (dist > player.size / 2) { // Only move if touch is far enough
       dx = tdx / dist;
       dy = tdy / dist;
     }
@@ -191,7 +240,7 @@ function update() {
 
   // Trail
   player.trail.push({ x: player.x, y: player.y, life: 15 });
-  if (player.trail.length > 20) player.trail.shift();
+  player.trail = player.trail.filter(t => t.life > 0); // 古いトレイルを削除
   player.trail.forEach(t => t.life--);
 
   // Spawn enemies
@@ -217,34 +266,93 @@ function update() {
       e.vx = Math.cos(e.targetAngle) * e.speed + Math.cos(perpendicularAngle) * e.speed * zigzagOffset;
       e.vy = Math.sin(e.targetAngle) * e.speed + Math.sin(perpendicularAngle) * e.speed * zigzagOffset;
     }
-    // Straight enemies' vx/vy are set once at spawn and don't change
-
     e.x += e.vx;
     e.y += e.vy;
   });
 
-  // Collision
+  // Player-Enemy Collision
   enemies = enemies.filter(e => {
     const dx = e.x - player.x;
     const dy = e.y - player.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < player.size + e.size) {
-      hp = 0; // 1デスゲーム
+      // 衝突発生
       spawnParticles(e.x, e.y, e.color, 8); // 敵の爆発パーティクル
-      if (hp <= 0) {
-        gameOver = true;
-        spawnParticles(player.x, player.y, player.color, 30); // プレイヤーの爆発パーティクル
+      
+      if (player.shieldActive) {
+        // シールドが有効な場合、シールドを消費
+        player.shieldActive = false;
+        player.shieldTimer = 0;
+        spawnParticles(player.x, player.y, '#8a2be2', 15, 3, 5); // シールド破壊パーティクル
+      } else {
+        // シールドがない場合、HPを減らす
+        hp--; 
+        if (hp <= 0) {
+          gameOver = true;
+          spawnParticles(player.x, player.y, player.color, 30); // プレイヤーの爆発パーティクル
+        }
       }
-      return false; // Remove enemy
+      return false; // 敵を削除
     }
-    return true; // Keep enemy
+    return true; // 敵を維持
   });
 
-  // Remove off-screen enemies
-  enemies = enemies.filter(e =>
-    e.x > -50 && e.x < canvas.width + 50 &&
-    e.y > -50 && e.y < canvas.height + 50
-  );
+  // Remove off-screen enemies and potentially spawn power-ups
+  enemies = enemies.filter(e => {
+    const isOffscreen = !(e.x > -50 && e.x < canvas.width + 50 &&
+                          e.y > -50 && e.y < canvas.height + 50);
+    if (isOffscreen && Math.random() < POWERUP_SPAWN_CHANCE_ENEMY_REMOVED) {
+      // 敵が画面外に出るか衝突で消える際にパワーアップをドロップ
+      spawnPowerUp(e.x, e.y); 
+    }
+    return !isOffscreen;
+  });
+
+  // Update Power-ups
+  powerUps.forEach(pu => {
+    pu.life--;
+    pu.pulsate += 0.1; // 脈動アニメーションの更新
+  });
+  powerUps = powerUps.filter(pu => pu.life > 0);
+
+  // Player-Power-up Collision
+  powerUps = powerUps.filter(pu => {
+    const dx = pu.x - player.x;
+    const dy = pu.y - player.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < player.size + pu.size) {
+      // パワーアップを取得
+      spawnParticles(pu.x, pu.y, pu.color, 10, 2, 4); // パワーアップ取得パーティクル
+      if (pu.type === POWERUP_TYPE_HP) {
+        if (hp < PLAYER_MAX_HP) { // HPが最大値未満の場合のみ回復
+          hp++;
+        }
+      } else if (pu.type === POWERUP_TYPE_SPEED) {
+        player.speedBoostActive = true;
+        player.speedBoostTimer = SPEED_BOOST_DURATION;
+      } else if (pu.type === POWERUP_TYPE_SHIELD) {
+        player.shieldActive = true;
+        player.shieldTimer = SHIELD_DURATION;
+      }
+      return false; // パワーアップを削除
+    }
+    return true; // パワーアップを維持
+  });
+
+  // Update power-up timers
+  if (player.shieldActive) {
+    player.shieldTimer--;
+    if (player.shieldTimer <= 0) {
+      player.shieldActive = false;
+      spawnParticles(player.x, player.y, '#8a2be2', 15, 3, 5); // シールド効果切れパーティクル
+    }
+  }
+  if (player.speedBoostActive) {
+    player.speedBoostTimer--;
+    if (player.speedBoostTimer <= 0) {
+      player.speedBoostActive = false;
+    }
+  }
 
   // Update particles
   particles.forEach(p => {
@@ -261,7 +369,9 @@ function update() {
 
   // UI
   document.getElementById('score').textContent = `SCORE: ${score}`;
-  document.getElementById('hp').textContent = hp > 0 ? 'HP: ❤' : 'HP: X'; // 1デス表示
+  let hpText = 'HP: ';
+  for (let i = 0; i < hp; i++) hpText += '❤'; // 現在のHPに応じてハートを表示
+  document.getElementById('hp-display').textContent = hpText;
 }
 
 // === Draw ===
@@ -297,6 +407,17 @@ function draw() {
     ctx.arc(player.x, player.y, player.size, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
+
+    // Draw shield visual if active
+    if (player.shieldActive) {
+      const shieldAlpha = Math.sin(performance.now() / 100) * 0.2 + 0.3; // 脈動する透明度
+      const shieldRadius = player.size + 5 + Math.sin(performance.now() / 200) * 3; // 脈動するサイズ
+      ctx.strokeStyle = `rgba(138, 43, 226, ${shieldAlpha})`; // Blue Violet
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, shieldRadius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   // Enemies
@@ -310,10 +431,25 @@ function draw() {
     ctx.shadowBlur = 0;
   });
 
+  // Power-ups
+  powerUps.forEach(pu => {
+    const alpha = pu.life / POWERUP_LIFE;
+    ctx.fillStyle = pu.color;
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = pu.color;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    const currentSize = pu.size + Math.sin(pu.pulsate) * 2; // 脈動するサイズ
+    ctx.arc(pu.x, pu.y, currentSize, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+  });
+
   // Particles
   particles.forEach(p => {
     const alpha = p.life / p.maxLife;
-    ctx.fillStyle = p.color; // color is already set as hsl or rgb
+    ctx.fillStyle = p.color;
     ctx.globalAlpha = alpha;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
@@ -358,11 +494,18 @@ function resetGame() {
   player.y = canvas.height / 2;
   player.trail = [];
   enemies = [];
+  powerUps = []; // パワーアップをリセット
   particles = [];
   score = 0;
-  hp = 1; // Reset HP for 1-hit game
+  hp = PLAYER_MAX_HP; // HPを最大値にリセット
   gameOver = false;
   spawnTimer = 0;
+  // プレイヤーのパワーアップ状態をリセット
+  player.shieldActive = false;
+  player.shieldTimer = 0;
+  player.speedBoostActive = false;
+  player.speedBoostTimer = 0;
+  player.speed = player.baseSpeed; // スピードを基本値にリセット
 }
 
 // Restart on click/tap when game over
