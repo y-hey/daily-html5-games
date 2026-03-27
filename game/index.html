@@ -36,16 +36,16 @@ canvas { display: block; }
 
 <div id="title-screen">
   <h1>DODGE!</h1>
-  <div class="sub">- Day 1: Core Movement & Dodge -</div>
+  <div class="sub">- Day 2: Enemy Variety & One-Shot Difficulty -</div>
   <button class="start-btn" onclick="startGame()">START</button>
 </div>
 
 <canvas id="game"></canvas>
 <div id="ui">
   <div id="score">SCORE: 0</div>
-  <div id="hp">HP: ███████████████</div>
+  <div id="hp">HP: ❤</div>
 </div>
-<div id="devlog-info">Daily Game Dev - v0.0.1</div>
+<div id="devlog-info">Daily Game Dev - v0.0.2</div>
 
 <script>
 // === Canvas Setup ===
@@ -55,13 +55,13 @@ canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 window.addEventListener('resize', () => {
   canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas.height = window.height;
 });
 
 // === Game State ===
 let gameRunning = false;
 let score = 0;
-let hp = 100;
+let hp = 1; // 1デスゲームのためHPを1に設定
 let gameOver = false;
 
 // Player
@@ -96,23 +96,47 @@ canvas.addEventListener('touchend', () => touchTarget = null);
 // Enemies
 let enemies = [];
 let spawnTimer = 0;
-const spawnInterval = 40; // frames
+const spawnInterval = 30; // frames - 難易度調整: 出現間隔を短縮
+
+const ENEMY_TYPE_STRAIGHT = 'straight';
+const ENEMY_TYPE_HOMING = 'homing';
+const ENEMY_TYPE_ZIGZAG = 'zigzag';
 
 function spawnEnemy() {
   const side = Math.floor(Math.random() * 4);
   let x, y;
-  if (side === 0) { x = Math.random() * canvas.width; y = -20; }
-  else if (side === 1) { x = canvas.width + 20; y = Math.random() * canvas.height; }
-  else if (side === 2) { x = Math.random() * canvas.width; y = canvas.height + 20; }
-  else { x = -20; y = Math.random() * canvas.height; }
+  // Determine spawn position outside the screen
+  if (side === 0) { x = Math.random() * canvas.width; y = -20; } // Top
+  else if (side === 1) { x = canvas.width + 20; y = Math.random() * canvas.height; } // Right
+  else if (side === 2) { x = Math.random() * canvas.width; y = canvas.height + 20; } // Bottom
+  else { x = -20; y = Math.random() * canvas.height; } // Left
 
-  const angle = Math.atan2(player.y - y, player.x - x);
-  const speed = 2 + Math.random() * 2 + score / 500;
+  const enemyTypes = [ENEMY_TYPE_STRAIGHT, ENEMY_TYPE_HOMING, ENEMY_TYPE_ZIGZAG];
+  const type = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+  
+  let color;
+  const baseSpeed = 2 + Math.random() * 2;
+  const speed = baseSpeed + score / 200; // 難易度調整: スコアによる速度上昇を急に
+
+  let initialAngle = Math.atan2(player.y - y, player.x - x); // Initial direction towards player
+
+  if (type === ENEMY_TYPE_STRAIGHT) {
+    color = '#66cc66'; // Green
+  } else if (type === ENEMY_TYPE_HOMING) {
+    color = `hsl(${Math.random() * 60 + 340}, 80%, 55%)`; // Red/Pink
+  } else { // ENEMY_TYPE_ZIGZAG
+    color = '#aa66cc'; // Purple
+  }
+
   enemies.push({
     x, y, size: 8 + Math.random() * 8,
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    color: `hsl(${Math.random() * 60 + 340}, 80%, 55%)`,
+    vx: Math.cos(initialAngle) * speed, // Initial velocity for straight and zigzag
+    vy: Math.sin(initialAngle) * speed, // Initial velocity for straight and zigzag
+    speed: speed, // Store base speed for dynamic adjustments
+    color: color,
+    type: type,
+    targetAngle: initialAngle, // Store target angle for zigzag movement
+    zigzagPhase: Math.random() * Math.PI * 2, // For zigzag calculation
   });
 }
 
@@ -149,7 +173,7 @@ function update() {
     const tdx = touchTarget.x - player.x;
     const tdy = touchTarget.y - player.y;
     const dist = Math.sqrt(tdx * tdx + tdy * tdy);
-    if (dist > 8) {
+    if (dist > 8) { // Only move if touch is far enough
       dx = tdx / dist;
       dy = tdy / dist;
     }
@@ -179,6 +203,22 @@ function update() {
 
   // Update enemies
   enemies.forEach(e => {
+    if (e.type === ENEMY_TYPE_HOMING) {
+      const angle = Math.atan2(player.y - e.y, player.x - e.x);
+      e.vx = Math.cos(angle) * e.speed;
+      e.vy = Math.sin(angle) * e.speed;
+    } else if (e.type === ENEMY_TYPE_ZIGZAG) {
+      e.zigzagPhase += 0.08; // ジグザグの頻度を調整
+      const zigzagMagnitude = 0.5 + Math.sin(score / 500) * 0.3; // スコアに応じてジグザグの振幅も変化
+      
+      const perpendicularAngle = e.targetAngle + Math.PI / 2; // 主な進行方向に対して垂直な方向
+      const zigzagOffset = Math.sin(e.zigzagPhase) * zigzagMagnitude;
+
+      e.vx = Math.cos(e.targetAngle) * e.speed + Math.cos(perpendicularAngle) * e.speed * zigzagOffset;
+      e.vy = Math.sin(e.targetAngle) * e.speed + Math.sin(perpendicularAngle) * e.speed * zigzagOffset;
+    }
+    // Straight enemies' vx/vy are set once at spawn and don't change
+
     e.x += e.vx;
     e.y += e.vy;
   });
@@ -189,16 +229,15 @@ function update() {
     const dy = e.y - player.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < player.size + e.size) {
-      hp -= 10;
-      spawnParticles(e.x, e.y, '#e94560', 8);
+      hp = 0; // 1デスゲーム
+      spawnParticles(e.x, e.y, e.color, 8); // 敵の爆発パーティクル
       if (hp <= 0) {
-        hp = 0;
         gameOver = true;
-        spawnParticles(player.x, player.y, '#00d2ff', 30);
+        spawnParticles(player.x, player.y, player.color, 30); // プレイヤーの爆発パーティクル
       }
-      return false;
+      return false; // Remove enemy
     }
-    return true;
+    return true; // Keep enemy
   });
 
   // Remove off-screen enemies
@@ -222,8 +261,7 @@ function update() {
 
   // UI
   document.getElementById('score').textContent = `SCORE: ${score}`;
-  const bars = Math.max(0, Math.floor(hp / 100 * 15));
-  document.getElementById('hp').textContent = `HP: ${'█'.repeat(bars)}${'░'.repeat(15 - bars)}`;
+  document.getElementById('hp').textContent = hp > 0 ? 'HP: ❤' : 'HP: X'; // 1デス表示
 }
 
 // === Draw ===
@@ -275,9 +313,7 @@ function draw() {
   // Particles
   particles.forEach(p => {
     const alpha = p.life / p.maxLife;
-    ctx.fillStyle = p.color.replace(')', `, ${alpha})`).replace('rgb', 'rgba').replace('hsl', 'hsla');
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = p.color;
+    ctx.fillStyle = p.color; // color is already set as hsl or rgb
     ctx.globalAlpha = alpha;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
@@ -324,7 +360,7 @@ function resetGame() {
   enemies = [];
   particles = [];
   score = 0;
-  hp = 100;
+  hp = 1; // Reset HP for 1-hit game
   gameOver = false;
   spawnTimer = 0;
 }
