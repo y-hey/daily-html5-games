@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ロボットゲーム - 2026-03-28</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* スクロールを禁止 */
+            background-color: #222; /* 暗い背景色 */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #eee;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        canvas {
+            display: block;
+            background-color: #333; /* Canvasの背景色 */
+            /* CanvasはJSによってウィンドウいっぱいに調整されます */
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #gameOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            /* デフォルトではイベントを透過させ、canvasへのタッチを可能にする */
+            pointer-events: none;
+        }
+
+        #gameOverScreen {
+            display: none; /* デフォルトでは非表示 */
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            padding: 20px 40px;
+            text-align: center;
+            /* 表示されたときにインタラクションを可能にする */
+            pointer-events: auto;
+            margin-top: 20vh; /* 画面上部寄りに配置 */
+        }
+
+        #gameOverScreen h2 {
+            font-size: 3em;
+            color: #ff5555; /* GAME OVERの文字色 */
+            margin-bottom: 10px;
+        }
+
+        #gameOverScreen p {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+        }
+
+        #gameOverScreen button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.2em;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+
+        #gameOverScreen button:hover {
+            background-color: #0056b3;
+        }
+
+        #scoreDisplay {
+            position: absolute; /* #gameOverlayに対する相対位置 */
+            top: 20px;
+            left: 20px;
+            font-size: 1.5em;
+            color: #eee;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px 15px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="gameOverlay">
+        <div id="scoreDisplay">Score: <span id="currentScore">0</span></div>
+        <div id="gameOverScreen">
+            <h2>GAME OVER</h2>
+            <p>Score: <span id="finalScore">0</span></p>
+            <button id="restartButton">RESTART</button>
+        </div>
+    </div>
+
+    <script>
+        // グローバル変数
+        let canvas, ctx;
+        let player;
+        let obstacles;
+        let score;
+        let gameOver;
+        let gameSpeedMultiplier; // 障害物の基本速度に対する乗数
+        let lastObstacleTime;
+        const OBSTACLE_INITIAL_INTERVAL = 1000; // 障害物生成の初期間隔 (ms)
+        const OBSTACLE_MIN_INTERVAL = 200; // 障害物生成の最小間隔 (ms)
+        const INITIAL_GAME_SPEED_MULTIPLIER = 1; // 障害物速度の初期乗数
+
+        // プレイヤーの入力フラグ
+        let leftPressed = false;
+        let rightPressed = false;
+        let touchDirection = 0; // -1:左, 1:右, 0:なし
+
+        // ゲームのサイズ (レスポンシブ対応)
+        let gameWidth, gameHeight;
+        let playerWidth, playerHeight, playerSpeed;
+        let obstacleMinSize, obstacleMaxSize;
+        let obstacleMinFallSpeed, obstacleMaxFallSpeed;
+
+        // --- ヘルパー関数 ---
+        function randomInt(min, max) {
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
+        // --- ゲームオブジェクト ---
+        function Player() {
+            this.width = playerWidth;
+            this.height = playerHeight;
+            this.x = (gameWidth - this.width) / 2;
+            this.y = gameHeight - this.height - (gameHeight * 0.05); // 画面下部からの位置
+            this.speed = playerSpeed;
+            this.color = '#007bff'; // 青色のロボット
+
+            this.draw = function() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+
+                // ロボットに見えるようなディテールを追加
+                ctx.fillStyle = '#add8e6'; // 水色
+                ctx.fillRect(this.x + this.width * 0.1, this.y - this.height * 0.2, this.width * 0.2, this.height * 0.2); // 左アンテナ
+                ctx.fillRect(this.x + this.width * 0.7, this.y - this.height * 0.2, this.width * 0.2, this.height * 0.2); // 右アンテナ
+                ctx.fillStyle = '#f0f0f0'; // 白 (目)
+                ctx.fillRect(this.x + this.width * 0.25, this.y + this.height * 0.15, this.width * 0.15, this.height * 0.15); // 左目
+                ctx.fillRect(this.x + this.width * 0.60, this.y + this.height * 0.15, this.width * 0.15, this.height * 0.15); // 右目
+                ctx.fillStyle = '#333'; // 濃い灰色 (口)
+                ctx.fillRect(this.x + this.width * 0.3, this.y + this.height * 0.5, this.width * 0.4, this.height * 0.1); // 口
+            };
+
+            this.update = function() {
+                if (leftPressed || touchDirection === -1) {
+                    this.x -= this.speed;
+                }
+                if (rightPressed || touchDirection === 1) {
+                    this.x += this.speed;
+                }
+
+                // 画面端の境界チェック
+                if (this.x < 0) {
+                    this.x = 0;
+                }
+                if (this.x + this.width > gameWidth) {
+                    this.x = gameWidth - this.width;
+                }
+            };
+        }
+
+        function Obstacle(x, y, width, height, speed) {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+            this.speed = speed;
+            this.color = '#808080'; // 灰色の障害物 (ロボットの部品)
+
+            this.draw = function() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                // ロボットの部品に見えるようなディテールを追加
+                ctx.strokeStyle = '#555555';
+                ctx.lineWidth = Math.max(1, gameWidth * 0.001); // レスポンシブな線幅
+                ctx.strokeRect(this.x, this.y, this.width, this.height);
+                ctx.beginPath();
+                ctx.moveTo(this.x + this.width * 0.2, this.y);
+                ctx.lineTo(this.x + this.width * 0.2, this.y + this.height);
+                ctx.moveTo(this.x + this.width * 0.8, this.y);
+                ctx.lineTo(this.x + this.width * 0.8, this.y + this.height);
+                ctx.moveTo(this.x, this.y + this.height * 0.5);
+                ctx.lineTo(this.x + this.width, this.y + this.height * 0.5);
+                ctx.stroke();
+            };
+
+            this.update = function() {
+                this.y += this.speed;
+            };
+        }
+
+        // --- ゲームロジック ---
+        function resizeGame() {
+            gameWidth = window.innerWidth;
+            gameHeight = window.innerHeight;
+
+            canvas.width = gameWidth;
+            canvas.height = gameHeight;
+
+            // 画面サイズに基づいて各種サイズを調整
+            playerWidth = gameWidth * 0.1;
+            playerHeight = gameHeight * 0.05;
+            playerSpeed = gameWidth * 0.007;
+
+            obstacleMinSize = gameWidth * 0.05;
+            obstacleMaxSize = gameWidth * 0.15;
+            obstacleMinFallSpeed = gameHeight * 0.003;
+            obstacleMaxFallSpeed = gameHeight * 0.008;
+
+            // プレイヤーがすでに存在する場合、位置を再調整
+            if (player) {
+                player.width = playerWidth;
+                player.height = playerHeight;
+                player.x = (gameWidth - player.width) / 2;
+                player.y = gameHeight - player.height - (gameHeight * 0.05);
+                player.speed = playerSpeed;
+            }
+        }
+
+        function initGame() {
+            score = 0;
+            gameOver = false;
+            obstacles = [];
+            gameSpeedMultiplier = INITIAL_GAME_SPEED_MULTIPLIER;
+            lastObstacleTime = 0;
+
+            player = new Player();
+            resizeGame(); // 初期のサイズと位置を設定
+
+            document.getElementById('gameOverScreen').style.display = 'none';
+            document.getElementById('scoreDisplay').style.display = 'block';
+            document.getElementById('currentScore').textContent = score;
+
+            if (!gameLoopRunning) {
+                gameLoopRunning = true;
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        let gameLoopRunning = false; // 複数のゲームループが走るのを防ぐフラグ
+
+        function update() {
+            if (gameOver) return;
+
+            player.update();
+
+            // 障害物の生成
+            const now = performance.now();
+            // スコアに応じて生成間隔を短くする (最小間隔まで)
+            let currentObstacleInterval = OBSTACLE_INITIAL_INTERVAL - Math.min(score * 10, OBSTACLE_INITIAL_INTERVAL - OBSTACLE_MIN_INTERVAL);
+            if (now - lastObstacleTime > currentObstacleInterval) {
+                const obsWidth = randomInt(obstacleMinSize, obstacleMaxSize);
+                const obsHeight = randomInt(obstacleMinSize * 0.8, obstacleMaxSize * 0.8);
+                const obsX = randomInt(0, gameWidth - obsWidth);
+                
+                // スコアに応じて落下速度を上げる
+                let currentFallSpeed = obstacleMinFallSpeed + (obstacleMaxFallSpeed - obstacleMinFallSpeed) * (score / 50); // スコア50で最大速度に近づく
+                currentFallSpeed = Math.min(currentFallSpeed, obstacleMaxFallSpeed * 2); // 最大速度にキャップをかける
+                
+                obstacles.push(new Obstacle(obsX, -obsHeight, obsWidth, obsHeight, currentFallSpeed * gameSpeedMultiplier));
+                lastObstacleTime = now;
+            }
+
+            // 障害物の更新とフィルタリング
+            obstacles = obstacles.filter(obs => {
+                obs.update();
+                // 衝突判定
+                if (
+                    player.x < obs.x + obs.width &&
+                    player.x + player.width > obs.x &&
+                    player.y < obs.y + obs.height &&
+                    player.y + player.height > obs.y
+                ) {
+                    gameOver = true;
+                    document.getElementById('gameOverScreen').style.display = 'flex';
+                    document.getElementById('finalScore').textContent = score;
+                    document.getElementById('scoreDisplay').style.display = 'none';
+                    return false; // 衝突した障害物を削除
+                }
+
+                // 障害物が画面外に出たら削除し、スコアを加算
+                if (obs.y > gameHeight) {
+                    score++;
+                    document.getElementById('currentScore').textContent = score;
+                    return false; // 削除
+                }
+                return true; // 保持
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, gameWidth, gameHeight); // キャンバスをクリア
+
+            player.draw();
+
+            obstacles.forEach(obs => obs.draw());
+        }
+
+        function gameLoop() {
+            if (!gameOver) {
+                update();
+                draw();
+                requestAnimationFrame(gameLoop);
+            } else {
+                gameLoopRunning = false;
+            }
+        }
+
+        // --- イベントリスナー ---
+        // PC用キーボード入力
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                leftPressed = true;
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                rightPressed = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                leftPressed = false;
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                rightPressed = false;
+            }
+        });
+
+        // モバイル用タッチ入力 (画面の左右半分をタップで移動)
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // スクロール/ズームを防止
+            const touchX = e.touches[0].clientX;
+            if (touchX < gameWidth / 2) {
+                touchDirection = -1; // 左
+            } else {
+                touchDirection = 1; // 右
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            touchDirection = 0; // 停止
+        }, { passive: false });
+
+        // リサイズ処理
+        window.addEventListener('resize', resizeGame);
+
+        // --- ページ読み込み時の初期化 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+
+            document.getElementById('restartButton').addEventListener('click', initGame);
+
+            initGame(); // ゲームをすぐに開始
+        });
+    </script>
+</body>
+</html>
