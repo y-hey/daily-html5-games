@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ネコゲーム - 2026-03-29</title>
+    <style>
+        /*
+         * 全体のレイアウト設定
+         * bodyの余白をなくし、canvasを中央に配置
+         * スマートフォンでのスクロールを防止
+         */
+        body {
+            margin: 0;
+            overflow: hidden; /* スクロールバーを非表示にする */
+            display: flex;
+            justify-content: center; /* 水平方向の中央揃え */
+            align-items: center;     /* 垂直方向の中央揃え */
+            background-color: #f0f0f0; /* 薄い灰色の背景 */
+            font-family: 'Arial', sans-serif;
+            color: #333;
+            -webkit-user-select: none; /* iOS Safariでの選択を無効化 */
+            -moz-user-select: none;    /* Firefoxでの選択を無効化 */
+            -ms-user-select: none;     /* IE/Edgeでの選択を無効化 */
+            user-select: none;         /* 標準での選択を無効化 */
+            touch-action: none;        /* タッチジェスチャーによるページスクロールを防止 */
+        }
+        
+        /*
+         * キャンバスのスタイル設定
+         * ブロック要素として表示し、背景色とボーダーを設定
+         * レスポンシブ対応のため、サイズはJavaScriptで制御する
+         */
+        canvas {
+            display: block;
+            background-color: #e0f7fa; /* 薄い水色のゲーム背景 */
+            border: 2px solid #555;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2); /* 影で立体感を出す */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // DOM要素の取得
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // ゲームの状態変数
+        let gameRunning = false; // ゲームが進行中か
+        let gameOver = false;    // ゲームオーバー状態か
+        let score = 0;           // スコア
+        let lastFrameTime = 0;   // 前回のフレーム描画時間 (deltaTime計算用)
+        let animationFrameId;    // requestAnimationFrameのID
+
+        // プレイヤー（ネコ）のオブジェクト
+        let player = {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            speed: 0,
+            dx: 0 // 移動方向 (-1:左, 0:停止, 1:右)
+        };
+
+        // 障害物（毛糸玉）の配列
+        let obstacles = [];
+        let obstacleGenerationInterval = 1000; // 障害物の生成間隔 (ms)
+        let lastObstacleGeneratedTime = 0;     // 最後に障害物を生成した時間
+
+        // ゲームのレスポンシブ設定
+        const resizeGame = () => {
+            // ウィンドウサイズに合わせてキャンバスサイズを設定
+            // PCの場合は最大768px幅、スマートフォンではウィンドウ幅に合わせる
+            canvas.width = window.innerWidth > 768 ? 768 : window.innerWidth;
+            canvas.height = window.innerHeight > 1024 ? 1024 : window.innerHeight;
+
+            // プレイヤーの位置とサイズをキャンバスサイズに合わせて調整
+            player.width = canvas.width / 10;
+            player.height = canvas.height / 15;
+            player.x = (canvas.width - player.width) / 2; // 中央に配置
+            player.y = canvas.height - player.height - 20; // 画面下部から20px上
+
+            // プレイヤーの速度もキャンバスサイズに比例させる
+            player.speed = canvas.width / 200;
+            
+            // ゲームオーバー時や初期化時は、初期画面を再描画する
+            if (!gameRunning && !gameOver) {
+                drawInitialScreen();
+            } else if (gameOver) {
+                draw(); // ゲームオーバー画面を再描画
+            }
+        };
+
+        // ゲームの初期設定
+        const initGame = () => {
+            resizeGame(); // 初回ロード時にキャンバスサイズを設定
+            window.addEventListener('resize', resizeGame); // ウィンドウサイズ変更時にリサイズ
+            document.addEventListener('keydown', handleKeyDown); // キーボード入力
+            document.addEventListener('keyup', handleKeyUp);     // キーボード入力
+            canvas.addEventListener('touchstart', handleTouchStart, { passive: false }); // タッチ入力 (ページスクロール防止)
+            canvas.addEventListener('touchmove', handleTouchMove, { passive: false });   // タッチ入力 (ページスクロール防止)
+            canvas.addEventListener('touchend', handleTouchEnd);                         // タッチ入力
+
+            // 初期画面の描画
+            drawInitialScreen();
+            
+            // キャンバスへのクリック/タップでゲーム開始またはリスタートをトリガー
+            canvas.addEventListener('click', () => {
+                if (!gameRunning && !gameOver) {
+                    startGame();
+                } else if (gameOver) {
+                    resetGame(true);
+                }
+            });
+        };
+
+        // ゲーム開始前の初期画面描画
+        const drawInitialScreen = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // キャンバスをクリア
+            drawPlayer(); // プレイヤーを描画
+            
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; // 半透明の黒いオーバーレイ
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.font = `${canvas.width / 15}px Arial`;
+            ctx.fillText('ネコゲーム', canvas.width / 2, canvas.height / 2 - canvas.height / 10);
+            ctx.font = `${canvas.width / 25}px Arial`;
+            ctx.fillText('タップまたはキーを押してスタート', canvas.width / 2, canvas.height / 2 + canvas.height / 20);
+        };
+
+        // ゲームのリセット
+        const resetGame = (fullReset = true) => {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId); // 既存のアニメーションフレームを停止
+            }
+            gameOver = false;
+            gameRunning = false;
+            score = 0;
+            obstacles = [];
+            lastObstacleGeneratedTime = 0;
+            obstacleGenerationInterval = 1000; // 生成間隔を初期値に戻す
+            player.dx = 0; // プレイヤーの移動方向を停止
+
+            // プレイヤー位置を中央にリセット
+            player.x = (canvas.width - player.width) / 2;
+            player.y = canvas.height - player.height - 20;
+
+            if (fullReset) {
+                drawInitialScreen(); // 全てリセットした場合は初期画面を描画
+            } else {
+                draw(); // リサイズなど部分リセットの場合は現在の状態を描画
+            }
+        };
+
+        // ゲームスタート
+        const startGame = () => {
+            if (!gameRunning && !gameOver) {
+                gameRunning = true;
+                lastFrameTime = performance.now(); // ゲーム開始時の時刻を記録
+                lastObstacleGeneratedTime = lastFrameTime; // 障害物生成タイマーをリセット
+                gameLoop(lastFrameTime); // ゲームループを開始
+            }
+        };
+
+        // キーボード入力ハンドラ
+        let leftPressed = false;
+        let rightPressed = false;
+
+        const handleKeyDown = (e) => {
+            startGame(); // キー入力でゲームスタート
+            if (gameOver) { // ゲームオーバー中にキーを押したらリスタート
+                resetGame(true);
+                return;
+            }
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                leftPressed = true;
+            } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                rightPressed = true;
+            }
+            updatePlayerDirection(); // プレイヤーの移動方向を更新
+        };
+
+        const handleKeyUp = (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                leftPressed = false;
+            } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                rightPressed = false;
+            }
+            updatePlayerDirection(); // プレイヤーの移動方向を更新
+        };
+
+        // キーの状態に基づいてプレイヤーの移動方向を決定
+        const updatePlayerDirection = () => {
+            if (leftPressed && !rightPressed) {
+                player.dx = -1; // 左
+            } else if (rightPressed && !leftPressed) {
+                player.dx = 1; // 右
+            } else {
+                player.dx = 0; // 停止
+            }
+        };
+
+        // タッチ入力ハンドラ
+        const handleTouchStart = (e) => {
+            e.preventDefault(); // デフォルトのイベント（スクロールなど）を防止
+            startGame(); // タップでゲームスタート
+            if (gameOver) { // ゲームオーバー中にタップしたらリスタート
+                resetGame(true);
+                return;
+            }
+
+            const touchX = e.touches[0].clientX;
+            // 画面の左半分をタップしたら左、右半分をタップしたら右に移動
+            if (touchX < canvas.width / 2) {
+                player.dx = -1;
+            } else {
+                player.dx = 1;
+            }
+        };
+        
+        const handleTouchMove = (e) => {
+            e.preventDefault(); // デフォルトのイベントを防止
+            // 指を動かしても移動方向を更新する
+            const touchX = e.touches[0].clientX;
+            if (touchX < canvas.width / 2) {
+                player.dx = -1;
+            } else {
+                player.dx = 1;
+            }
+        };
+
+        const handleTouchEnd = (e) => {
+            player.dx = 0; // 指が離れたら停止
+        };
+
+
+        // 描画関数
+        const drawPlayer = () => {
+            ctx.fillStyle = 'orange'; // ネコの色
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            // 簡易的なネコの耳を描画
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(player.x + player.width * 0.3, player.y - player.height * 0.3);
+            ctx.lineTo(player.x + player.width * 0.4, player.y);
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.moveTo(player.x + player.width, player.y);
+            ctx.lineTo(player.x + player.width * 0.7, player.y - player.height * 0.3);
+            ctx.lineTo(player.x + player.width * 0.6, player.y);
+            ctx.fill();
+        };
+
+        const drawObstacles = () => {
+            obstacles.forEach(obstacle => {
+                ctx.fillStyle = 'gray'; // 毛糸玉の色
+                ctx.beginPath();
+                ctx.arc(obstacle.x, obstacle.y, obstacle.radius, 0, Math.PI * 2); // 円を描画
+                ctx.fill();
+                ctx.strokeStyle = '#555'; // 縁の色
+                ctx.lineWidth = 2;        // 縁の太さ
+                ctx.stroke();
+            });
+        };
+
+        const drawScore = () => {
+            ctx.fillStyle = '#333';
+            ctx.font = `${canvas.width / 25}px Arial`;
+            ctx.textAlign = 'left';
+            ctx.fillText(`Score: ${Math.floor(score)}`, 10, canvas.height - 10); // 左下隅にスコア表示
+        };
+
+        const drawGameOver = () => {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; // 半透明の黒いオーバーレイ
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.font = `${canvas.width / 10}px Arial`;
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - canvas.height / 10);
+            ctx.font = `${canvas.width / 20}px Arial`;
+            ctx.fillText(`Score: ${Math.floor(score)}`, canvas.width / 2, canvas.height / 2 + canvas.height / 20);
+            ctx.font = `${canvas.width / 25}px Arial`;
+            ctx.fillText('タップまたはキーを押してリスタート', canvas.width / 2, canvas.height / 2 + canvas.height / 6);
+        };
+
+        // 全ての要素を描画するメイン描画関数
+        const draw = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // キャンバスをクリア
+            drawPlayer();
+            drawObstacles();
+            drawScore();
+            if (gameOver) {
+                drawGameOver();
+            }
+        };
+
+        // 更新関数
+        const updatePlayer = (deltaTime) => {
+            // deltaTimeに基づきプレイヤー位置を更新 (フレームレート依存回避)
+            player.x += player.dx * player.speed * (deltaTime / 16.66); 
+            
+            // 画面端での移動制限
+            if (player.x < 0) {
+                player.x = 0;
+            } else if (player.x + player.width > canvas.width) {
+                player.x = canvas.width - player.width;
+            }
+        };
+
+        // 障害物を生成
+        const generateObstacle = (currentTime) => {
+            if (currentTime - lastObstacleGeneratedTime > obstacleGenerationInterval) {
+                // 障害物のサイズをランダムに決定 (キャンバス幅に比例)
+                const radius = canvas.width / 30 + Math.random() * (canvas.width / 60); 
+                // 障害物のX座標をランダムに決定
+                const x = Math.random() * (canvas.width - radius * 2) + radius;
+                // 障害物の速度をランダムに決定 (キャンバス高さに比例)
+                const speed = (canvas.height / 300) + Math.random() * (canvas.height / 400); 
+                obstacles.push({ x: x, y: -radius, radius: radius, speed: speed }); // 配列に追加
+                lastObstacleGeneratedTime = currentTime;
+
+                // ゲームが進行するにつれて難易度を上げる
+                // 障害物の生成間隔を徐々に短くする
+                if (obstacleGenerationInterval > 200) {
+                    obstacleGenerationInterval -= 5; 
+                }
+                // 既存の障害物の速度も徐々に速くする
+                obstacles.forEach(obs => obs.speed *= 1.001); 
+            }
+        };
+
+        // 障害物の位置を更新
+        const updateObstacles = (deltaTime) => {
+            for (let i = 0; i < obstacles.length; i++) {
+                obstacles[i].y += obstacles[i].speed * (deltaTime / 16.66);
+
+                // 画面外に出た障害物を配列から削除
+                if (obstacles[i].y - obstacles[i].radius > canvas.height) {
+                    obstacles.splice(i, 1);
+                    i--; // 要素を削除したためインデックスを調整
+                }
+            }
+        };
+
+        // 衝突判定 (プレイヤーの矩形と障害物の円)
+        const checkCollision = () => {
+            for (let i = 0; i < obstacles.length; i++) {
+                const obs = obstacles[i];
+                // プレイヤーの矩形座標
+                const px = player.x;
+                const py = player.y;
+                const pw = player.width;
+                const ph = player.height;
+
+                // 障害物の円座標と半径
+                const cx = obs.x;
+                const cy = obs.y;
+                const r = obs.radius;
+
+                // 円の中心から最も近い矩形上の点を求める
+                let testX = cx;
+                let testY = cy;
+
+                if (cx < px) {
+                    testX = px;
+                } else if (cx > px + pw) {
+                    testX = px + pw;
+                }
+
+                if (cy < py) {
+                    testY = py;
+                } else if (cy > py + ph) {
+                    testY = py + ph;
+                }
+
+                // その点と円の中心との距離の二乗を計算
+                const distX = cx - testX;
+                const distY = cy - testY;
+                const distanceSquared = (distX * distX) + (distY * distY);
+
+                // 距離が円の半径以下であれば衝突
+                if (distanceSquared <= (r * r)) {
+                    gameOver = true;
+                    gameRunning = false;
+                    cancelAnimationFrame(animationFrameId); // ゲームループ停止
+                    return; // 衝突したらループを終了
+                }
+            }
+        };
+
+        // メインゲームループ
+        const gameLoop = (currentTime) => {
+            // 経過時間 (deltaTime) を計算
+            const deltaTime = currentTime - lastFrameTime;
+            lastFrameTime = currentTime;
+
+            if (gameRunning && !gameOver) {
+                score += deltaTime / 1000; // スコアを秒数で加算
+                updatePlayer(deltaTime);
+                generateObstacle(currentTime);
+                updateObstacles(deltaTime);
+                checkCollision();
+            }
+
+            draw(); // 描画処理
+
+            if (!gameOver) {
+                // ゲームオーバーでなければ次のフレームをリクエスト
+                animationFrameId = requestAnimationFrame(gameLoop);
+            }
+        };
+
+        // ゲーム開始 (ページロード時)
+        initGame();
+
+    </script>
+</body>
+</html>
