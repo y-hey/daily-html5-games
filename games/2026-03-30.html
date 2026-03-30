@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ウサギゲーム - 2026-03-30</title>
+    <style>
+        /*
+         * 全体のリセットと基本的なスタイル設定
+         */
+        html, body {
+            margin: 0;
+            overflow: hidden; /* スクロールを禁止 */
+            height: 100%;
+            font-family: sans-serif; /* シンプルなフォント */
+            user-select: none; /* テキスト選択を禁止 */
+            -webkit-user-select: none; /* Safari */
+            -moz-user-select: none; /* Firefox */
+            -ms-user-select: none; /* IE/Edge */
+            touch-action: manipulation; /* タッチ操作の遅延防止 */
+        }
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #333; /* 暗い背景色 */
+        }
+
+        /*
+         * ゲームキャンバスのスタイル
+         */
+        canvas {
+            display: block;
+            background-color: #add8e6; /* 薄い水色の空 */
+            border: 2px solid #555;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); /* 影で立体感を出す */
+        }
+
+        /*
+         * スコア表示のスタイル
+         */
+        #scoreDisplay {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%); /* 中央揃え */
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7); /* 読みやすい影 */
+            z-index: 10; /* キャンバスより前面に表示 */
+        }
+
+        /*
+         * ゲームオーバー画面のスタイル
+         */
+        #gameOverScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%); /* 中央揃え */
+            background-color: rgba(0, 0, 0, 0.8); /* 半透明の黒い背景 */
+            color: white;
+            padding: 30px 50px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 24px;
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+            z-index: 100; /* 最前面に表示 */
+        }
+        #gameOverScreen p {
+            margin: 10px 0;
+        }
+        #gameOverScreen p:first-child {
+            font-size: 36px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+
+        /*
+         * リスタートボタンのスタイル
+         */
+        #gameOverScreen button {
+            background-color: #4CAF50; /* 緑色のボタン */
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 20px;
+            margin-top: 20px;
+            transition: background-color 0.3s ease, transform 0.1s ease; /* ホバーとクリック時のアニメーション */
+        }
+        #gameOverScreen button:hover {
+            background-color: #45a049;
+        }
+        #gameOverScreen button:active {
+            background-color: #3e8e41;
+            transform: translateY(2px); /* クリックで少し沈む */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="scoreDisplay">SCORE: 0</div>
+    <div id="gameOverScreen" style="display: none;">
+        <p>GAME OVER</p>
+        <p>Score: <span id="finalScore">0</span></p>
+        <button id="restartButton">RESTART</button>
+    </div>
+
+    <script>
+        // DOM要素の取得
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const finalScoreSpan = document.getElementById('finalScore');
+        const restartButton = document.getElementById('restartButton');
+
+        // ゲームの状態変数
+        let gameWidth, gameHeight;
+        let player;
+        let carrots = []; // ニンジンの配列
+        let enemies = []; // 敵（石）の配列
+        let score = 0;
+        let gameOver = false;
+        let lastFrameTime = 0; // 最後のフレーム描画時間 (deltaTime計算用)
+
+        // ゲーム難易度設定
+        let carrotSpawnInterval = 1000; // ニンジン生成間隔 (ms)
+        let enemySpawnInterval = 2000;  // 敵生成間隔 (ms)
+        let carrotSpeed = 0.15;         // ニンジンの落下速度 (px/ms)
+        let enemySpeed = 0.1;           // 敵の落下速度 (px/ms)
+        let lastCarrotSpawnTime = 0;
+        let lastEnemySpawnTime = 0;
+        let gameStartTime = 0;          // ゲーム開始からの経過時間で難易度を調整
+
+        // 入力状態 (キーボード)
+        const input = {
+            left: false,
+            right: false
+        };
+        // 入力状態 (タッチ)
+        let touchMoveDir = 0; // -1: 左移動, 0: 停止, 1: 右移動
+
+        // --- ゲームオブジェクトの基底クラス ---
+        class GameObject {
+            constructor(x, y, width, height, speed) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.speed = speed; // speedはpx/ms単位
+            }
+
+            update(deltaTime) {
+                this.y += this.speed * deltaTime; // 経過時間に応じて移動
+            }
+
+            draw() {
+                // 各オブジェクトでオーバーライドされる
+            }
+        }
+
+        // --- プレイヤー（ウサギ）クラス ---
+        class Player extends GameObject {
+            constructor(x, y, width, height, speed) {
+                super(x, y, width, height, speed);
+            }
+
+            draw() {
+                // ウサギの体 (白い四角)
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+
+                // 耳 (二つの細長い四角)
+                ctx.fillRect(this.x + this.width * 0.15, this.y - this.height * 0.3, this.width * 0.2, this.height * 0.4);
+                ctx.fillRect(this.x + this.width * 0.65, this.y - this.height * 0.3, this.width * 0.2, this.height * 0.4);
+                
+                // 目 (二つの小さな黒い円)
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(this.x + this.width * 0.35, this.y + this.height * 0.4, this.width * 0.08, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(this.x + this.width * 0.65, this.y + this.height * 0.4, this.width * 0.08, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // --- ニンジンクラス ---
+        class Carrot extends GameObject {
+            constructor(x, y, width, height, speed) {
+                super(x, y, width, height, speed);
+            }
+
+            draw() {
+                // ニンジン本体 (オレンジ色の三角形)
+                ctx.fillStyle = '#ff8c00'; // DarkOrange
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y + this.height);
+                ctx.lineTo(this.x + this.width, this.y + this.height);
+                ctx.lineTo(this.x + this.width / 2, this.y);
+                ctx.closePath();
+                ctx.fill();
+
+                // 葉っぱ (緑色の線)
+                ctx.strokeStyle = '#228b22'; // ForestGreen
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(this.x + this.width / 2 - 5, this.y);
+                ctx.lineTo(this.x + this.width / 2 - 10, this.y - 10);
+                ctx.moveTo(this.x + this.width / 2 + 5, this.y);
+                ctx.lineTo(this.x + this.width / 2 + 10, this.y - 10);
+                ctx.stroke();
+            }
+        }
+
+        // --- 敵（石）クラス ---
+        class Enemy extends GameObject {
+            constructor(x, y, width, height, speed) {
+                super(x, y, width, height, speed);
+            }
+
+            draw() {
+                // 石 (灰色の丸)
+                ctx.fillStyle = '#a9a9a9'; // DarkGray
+                ctx.beginPath();
+                ctx.arc(this.x + this.width / 2, this.y + this.height / 2, this.width / 2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // --- ゲームの初期化とリサイズ処理 ---
+        function resizeCanvas() {
+            gameWidth = window.innerWidth;
+            gameHeight = window.innerHeight;
+            canvas.width = gameWidth;
+            canvas.height = gameHeight;
+
+            // プレイヤーの位置を中央下部に調整
+            if (player) {
+                player.x = (gameWidth / 2) - (player.width / 2);
+                player.y = gameHeight - player.height - 30; // 下から30px上
+            }
+        }
+
+        // --- ゲームの開始/リスタート処理 ---
+        function initGame() {
+            resizeCanvas(); // キャンバスサイズを初期設定
+            window.addEventListener('resize', resizeCanvas); // ウィンドウリサイズ時の処理
+
+            // プレイヤーオブジェクトの生成
+            player = new Player(
+                (gameWidth / 2) - 25, // 初期X座標 (中央)
+                gameHeight - 80,      // 初期Y座標 (画面下部)
+                50,                   // 幅
+                50,                   // 高さ
+                0.3                   // 移動速度 (px/ms)
+            );
+
+            // 各種ゲーム状態のリセット
+            carrots = [];
+            enemies = [];
+            score = 0;
+            gameOver = false;
+            lastFrameTime = performance.now(); // 現在時刻を取得
+            lastCarrotSpawnTime = lastFrameTime;
+            lastEnemySpawnTime = lastFrameTime;
+            gameStartTime = lastFrameTime;
+
+            // 難易度を初期値にリセット
+            carrotSpawnInterval = 1000;
+            enemySpawnInterval = 2000;
+            carrotSpeed = 0.15;
+            enemySpeed = 0.1;
+
+            // 表示のリセット
+            scoreDisplay.textContent = 'SCORE: 0';
+            gameOverScreen.style.display = 'none';
+
+            // ゲームループを開始
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- ゲームループ ---
+        function gameLoop(currentTime) {
+            if (gameOver) return; // ゲームオーバーならループを停止
+
+            const deltaTime = currentTime - lastFrameTime; // 前回のフレームからの経過時間
+            lastFrameTime = currentTime;
+
+            update(deltaTime, currentTime); // ゲームの状態を更新
+            draw(); // 描画
+
+            requestAnimationFrame(gameLoop); // 次のフレームを要求
+        }
+
+        // --- ゲームの状態更新 ---
+        function update(deltaTime, currentTime) {
+            // プレイヤーの移動
+            if (input.left || touchMoveDir === -1) {
+                player.x -= player.speed * deltaTime;
+            }
+            if (input.right || touchMoveDir === 1) {
+                player.x += player.speed * deltaTime;
+            }
+
+            // プレイヤーが画面外に出ないように制限
+            if (player.x < 0) player.x = 0;
+            if (player.x + player.width > gameWidth) player.x = gameWidth - player.width;
+
+            // 難易度の動的調整 (時間経過で速く、多くなる)
+            const gameDuration = currentTime - gameStartTime; // ゲーム開始からの経過時間 (ms)
+            carrotSpawnInterval = Math.max(300, 1000 - gameDuration / 20); // 最小300ms
+            enemySpawnInterval = Math.max(500, 2000 - gameDuration / 15);  // 最小500ms
+            carrotSpeed = Math.min(0.5, 0.15 + gameDuration / 200000);     // 最大0.5 px/ms
+            enemySpeed = Math.min(0.4, 0.1 + gameDuration / 150000);       // 最大0.4 px/ms
+
+            // ニンジンの生成
+            if (currentTime - lastCarrotSpawnTime > carrotSpawnInterval) {
+                const x = Math.random() * (gameWidth - 30); // ランダムなX座標
+                carrots.push(new Carrot(x, -30, 20, 30, carrotSpeed));
+                lastCarrotSpawnTime = currentTime;
+            }
+
+            // 敵（石）の生成
+            if (currentTime - lastEnemySpawnTime > enemySpawnInterval) {
+                const x = Math.random() * (gameWidth - 40); // ランダムなX座標
+                enemies.push(new Enemy(x, -40, 30, 30, enemySpeed));
+                lastEnemySpawnTime = currentTime;
+            }
+
+            // ニンジンの更新と衝突判定
+            carrots = carrots.filter(carrot => {
+                carrot.update(deltaTime);
+                if (checkCollision(player, carrot)) {
+                    score += 10;
+                    scoreDisplay.textContent = 'SCORE: ' + score;
+                    return false; // 衝突したニンジンは削除
+                }
+                return carrot.y < gameHeight + 10; // 画面外に出たニンジンは削除
+            });
+
+            // 敵の更新と衝突判定
+            enemies = enemies.filter(enemy => {
+                enemy.update(deltaTime);
+                if (checkCollision(player, enemy)) {
+                    gameOver = true;
+                    showGameOver(); // ゲームオーバー画面を表示
+                    return false; // 衝突した敵は削除
+                }
+                return enemy.y < gameHeight + 10; // 画面外に出た敵は削除
+            });
+        }
+
+        // --- 描画処理 ---
+        function draw() {
+            ctx.clearRect(0, 0, gameWidth, gameHeight); // キャンバス全体をクリア
+
+            player.draw(); // プレイヤーを描画
+
+            carrots.forEach(carrot => carrot.draw()); // 全てのニンジンを描画
+            enemies.forEach(enemy => enemy.draw());   // 全ての敵を描画
+        }
+
+        // --- 衝突判定 (AABB) ---
+        function checkCollision(obj1, obj2) {
+            return obj1.x < obj2.x + obj2.width &&
+                   obj1.x + obj1.width > obj2.x &&
+                   obj1.y < obj2.y + obj2.height &&
+                   obj1.y + obj1.height > obj2.y;
+        }
+
+        // --- ゲームオーバー表示 ---
+        function showGameOver() {
+            gameOverScreen.style.display = 'block';
+            finalScoreSpan.textContent = score;
+        }
+
+        // --- イベントリスナー ---
+        // キーボード入力
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') {
+                input.left = true;
+            } else if (e.key === 'ArrowRight') {
+                input.right = true;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft') {
+                input.left = false;
+            } else if (e.key === 'ArrowRight') {
+                input.right = false;
+            }
+        });
+
+        // タッチ入力 (スマートフォン対応)
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // デフォルトのスクロール/ズーム動作を防止
+            if (!gameOver) {
+                const touchX = e.touches[0].clientX; // 最初のタッチのX座標
+                if (touchX < gameWidth / 2) {
+                    touchMoveDir = -1; // 画面左半分をタッチで左移動
+                } else {
+                    touchMoveDir = 1; // 画面右半分をタッチで右移動
+                }
+            }
+        }, { passive: false }); // preventDefault() を有効にするため
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            // すべての指が離れた場合に移動を停止
+            if (e.touches.length === 0) {
+                touchMoveDir = 0;
+            } else {
+                // シンプルな実装のため、いずれかの指が離れたら移動を停止
+                // 複数指で複雑な操作をする場合は、touches[0]などのID管理が必要
+                touchMoveDir = 0; 
+            }
+        }, { passive: false });
+
+        // リスタートボタンのクリックイベント
+        restartButton.addEventListener('click', () => {
+            initGame(); // ゲームを再初期化して開始
+        });
+
+        // ページロード時にゲームを開始
+        initGame();
+    </script>
+</body>
+</html>
