@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>恐竜ゲーム - 2026-04-12</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            overflow: hidden; /* スクロールバー非表示 */
+            font-family: sans-serif;
+            -webkit-user-select: none; /* スマホでの長押し選択防止 */
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            touch-action: manipulation; /* タップの遅延防止 */
+        }
+
+        canvas {
+            background-color: #fff;
+            border: 2px solid #333;
+            display: block;
+            touch-action: manipulation; /* タップの遅延防止 */
+            /* レスポンシブ対応 */
+            max-width: 90vw;
+            max-height: 90vh;
+            width: auto; /* widthとheightを自動調整 */
+            height: auto;
+        }
+
+        /* スマートフォンでの縦画面時の表示を考慮 */
+        @media (orientation: portrait) {
+            canvas {
+                max-width: 95vw;
+                max-height: 70vh; /* 高さの制約を少し厳しく */
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // ゲームの基本設定
+        const GAME_WIDTH = 800; // 論理的なゲーム幅
+        const GAME_HEIGHT = 200; // 論理的なゲーム高さ
+
+        canvas.width = GAME_WIDTH;
+        canvas.height = GAME_HEIGHT;
+
+        // ゲーム変数
+        let player;
+        let obstacles = [];
+        let gameSpeed;
+        let score;
+        let isGameOver;
+        let isGameStarted; // ゲームが開始されたか（初回タップ待ち）
+        let lastObstacleTime;
+        let animationFrameId;
+
+        // 恐竜 (プレイヤー) の設定
+        const PLAYER_WIDTH = 20;
+        const PLAYER_HEIGHT = 40;
+        const PLAYER_START_X = 50;
+        const GROUND_Y = GAME_HEIGHT - 20; // 地面の位置
+
+        // ジャンプ関連の設定
+        const JUMP_VELOCITY = -10;
+        const GRAVITY = 0.6;
+
+        class Player {
+            constructor() {
+                this.x = PLAYER_START_X;
+                this.y = GROUND_Y - PLAYER_HEIGHT;
+                this.width = PLAYER_WIDTH;
+                this.height = PLAYER_HEIGHT;
+                this.velocityY = 0;
+                this.isJumping = false;
+            }
+
+            draw() {
+                ctx.fillStyle = this.isJumping ? '#5cb3ff' : '#6b4226'; // ジャンプ中は色を変える
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+
+                // 目と口の表現 (簡略化)
+                ctx.fillStyle = '#000';
+                ctx.fillRect(this.x + this.width * 0.7, this.y + this.height * 0.2, this.width * 0.1, this.height * 0.1); // 目
+                ctx.fillRect(this.x + this.width * 0.6, this.y + this.height * 0.5, this.width * 0.2, this.height * 0.05); // 口
+
+                // 腕 (小さく)
+                ctx.fillStyle = '#6b4226';
+                ctx.fillRect(this.x + this.width * 0.2, this.y + this.height * 0.3, this.width * 0.1, this.height * 0.15);
+
+                // 脚 (走ってる風に交互に)
+                ctx.fillStyle = '#6b4226';
+                ctx.fillRect(this.x + this.width * 0.1, this.y + this.height * 0.8, this.width * 0.3, this.height * 0.2);
+                ctx.fillRect(this.x + this.width * 0.6, this.y + this.height * 0.8, this.width * 0.3, this.height * 0.2);
+            }
+
+            update() {
+                if (this.isJumping) {
+                    this.y += this.velocityY;
+                    this.velocityY += GRAVITY;
+
+                    if (this.y >= GROUND_Y - this.height) {
+                        this.y = GROUND_Y - this.height;
+                        this.velocityY = 0;
+                        this.isJumping = false;
+                    }
+                }
+            }
+
+            jump() {
+                if (!this.isJumping) {
+                    this.isJumping = true;
+                    this.velocityY = JUMP_VELOCITY;
+                }
+            }
+        }
+
+        class Obstacle {
+            constructor(x, width, height) {
+                this.x = x;
+                this.y = GROUND_Y - height;
+                this.width = width;
+                this.height = height;
+                this.type = Math.random() > 0.5 ? 'cactus1' : 'cactus2'; // 複数のサボテンタイプをシミュレート
+            }
+
+            draw() {
+                ctx.fillStyle = '#228b22'; // サボテンの色
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+
+                // サボテンの枝を表現 (簡略化)
+                if (this.type === 'cactus1') {
+                    ctx.fillRect(this.x - this.width * 0.3, this.y + this.height * 0.3, this.width * 0.3, this.height * 0.2);
+                } else {
+                    ctx.fillRect(this.x + this.width * 0.7, this.y + this.height * 0.4, this.width * 0.3, this.height * 0.2);
+                    ctx.fillRect(this.x - this.width * 0.2, this.y + this.height * 0.6, this.width * 0.2, this.height * 0.15);
+                }
+            }
+
+            update() {
+                this.x -= gameSpeed;
+            }
+        }
+
+        function initGame() {
+            player = new Player();
+            obstacles = [];
+            gameSpeed = 5;
+            score = 0;
+            isGameOver = false;
+            isGameStarted = false;
+            lastObstacleTime = performance.now();
+
+            // 初期化時にCanvasをクリアして待機メッセージを表示
+            ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+            drawGround();
+            player.draw(); // 恐竜だけ表示
+            drawScore();
+            drawStartMessage();
+        }
+
+        function drawStartMessage() {
+            ctx.fillStyle = '#000';
+            ctx.font = '20px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Tap or Space to Start', GAME_WIDTH / 2, GAME_HEIGHT / 2);
+        }
+
+        function startGame() {
+            isGameStarted = true;
+            gameLoop();
+        }
+
+        function gameLoop(currentTime) {
+            if (isGameOver) {
+                cancelAnimationFrame(animationFrameId);
+                return;
+            }
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+
+            ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+            drawGround();
+
+            // プレイヤーの更新と描画
+            player.update();
+            player.draw();
+
+            // 障害物の生成
+            if (currentTime - lastObstacleTime > Math.random() * 2000 + 1000 / (gameSpeed / 5)) { // 速度に応じて出現頻度調整
+                generateObstacle();
+                lastObstacleTime = currentTime;
+            }
+
+            // 障害物の更新と描画
+            for (let i = 0; i < obstacles.length; i++) {
+                const obstacle = obstacles[i];
+                obstacle.update();
+                obstacle.draw();
+
+                // 衝突判定
+                if (checkCollision(player, obstacle)) {
+                    isGameOver = true;
+                    drawGameOver();
+                    return;
+                }
+
+                // 画面外に出た障害物を削除
+                if (obstacle.x + obstacle.width < 0) {
+                    obstacles.splice(i, 1);
+                    i--; // spliceで要素が詰まるためインデックス調整
+                }
+            }
+
+            // スコアの更新と描画
+            score += 0.1; // 時間経過でスコア増加
+            drawScore();
+
+            // ゲーム速度の徐々上昇
+            gameSpeed += 0.001;
+        }
+
+        function generateObstacle() {
+            const width = Math.random() * 15 + 10; // 10-25
+            const height = Math.random() * 30 + 20; // 20-50
+            obstacles.push(new Obstacle(GAME_WIDTH, width, height));
+        }
+
+        function drawGround() {
+            ctx.fillStyle = '#8b4513'; // 茶色
+            ctx.fillRect(0, GROUND_Y, GAME_WIDTH, GAME_HEIGHT - GROUND_Y);
+
+            // 地面のライン
+            ctx.strokeStyle = '#a0522d';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, GROUND_Y);
+            ctx.lineTo(GAME_WIDTH, GROUND_Y);
+            ctx.stroke();
+        }
+
+        function drawScore() {
+            ctx.fillStyle = '#000';
+            ctx.font = '16px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText('Score: ' + Math.floor(score), GAME_WIDTH - 10, 20);
+        }
+
+        function drawGameOver() {
+            ctx.fillStyle = '#000';
+            ctx.font = '24px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER!', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 15);
+            ctx.font = '16px Arial';
+            ctx.fillText('Score: ' + Math.floor(score), GAME_WIDTH / 2, GAME_HEIGHT / 2 + 10);
+            ctx.font = '14px Arial';
+            ctx.fillText('Tap or Space to Restart', GAME_WIDTH / 2, GAME_HEIGHT / 2 + 40);
+        }
+
+        // 衝突判定 (AABB)
+        function checkCollision(player, obstacle) {
+            return player.x < obstacle.x + obstacle.width &&
+                   player.x + player.width > obstacle.x &&
+                   player.y < obstacle.y + obstacle.height &&
+                   player.y + player.height > obstacle.y;
+        }
+
+        // イベントリスナー
+        function handleAction() {
+            if (!isGameStarted) {
+                startGame();
+            } else if (!isGameOver) {
+                player.jump();
+            } else {
+                initGame();
+                startGame(); // リスタート後はすぐにゲーム開始
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault(); // スペースキーによるページスクロールを防止
+                handleAction();
+            }
+        });
+
+        // スマホ対応
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // デフォルトのタッチイベント（スクロールなど）を防止
+            handleAction();
+        });
+
+        // 初期化
+        initGame();
+
+    </script>
+</body>
+</html>
