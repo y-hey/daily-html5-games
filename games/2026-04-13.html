@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>深海ゲーム - 2026-04-13</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* スクロールバー非表示 */
+            background-color: #000022; /* 深海の背景色 */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #DDDDFF;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px; /* PCでの最大幅 */
+            height: 100vh; /* スマートフォンで画面いっぱいに */
+            max-height: 800px; /* PCでの最大高さ */
+            overflow: hidden;
+            background-color: #000044;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+            border-radius: 10px;
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #000033; /* Canvasの背景色 */
+        }
+
+        #score-display {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 24px;
+            color: #88FFFF;
+            text-shadow: 2px 2px 4px #000;
+            z-index: 10;
+        }
+
+        #game-over-display, #tap-to-start {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 32px;
+            text-align: center;
+            color: #FF6666;
+            text-shadow: 3px 3px 6px #000;
+            z-index: 20;
+        }
+
+        #game-over-display button, #tap-to-start {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 24px;
+            cursor: pointer;
+            background-color: #0088CC;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+            touch-action: manipulation; /* タップ時に遅延を防ぐ */
+        }
+
+        #game-over-display button:hover {
+            background-color: #0066AA;
+        }
+
+        #tap-to-start {
+            font-size: 28px;
+            color: #66FFFF;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="score-display">スコア: 0</div>
+        <div id="game-over-display" style="display:none;">
+            ゲームオーバー！<br>
+            <span id="final-score"></span><br>
+            <button id="restart-button">リスタート</button>
+        </div>
+        <div id="tap-to-start" style="display:flex;">
+            タップまたはクリックで開始
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score-display');
+        const gameOverDisplay = document.getElementById('game-over-display');
+        const finalScoreDisplay = document.getElementById('final-score');
+        const restartButton = document.getElementById('restart-button');
+        const tapToStartDisplay = document.getElementById('tap-to-start');
+        const gameContainer = document.getElementById('game-container');
+
+        // Canvasサイズをコンテナに合わせる
+        function resizeCanvas() {
+            canvas.width = gameContainer.clientWidth;
+            canvas.height = gameContainer.clientHeight;
+        }
+        resizeCanvas();
+
+        let player = {
+            x: canvas.width / 2,
+            y: canvas.height - 60,
+            width: 40,
+            height: 30,
+            color: '#00FFFF',
+            speed: 7, // プレイヤー移動速度
+            targetX: canvas.width / 2, // プレイヤーが目指すX座標
+        };
+
+        let obstacles = [];
+        let score = 0;
+        let gameSpeed = 1; // 障害物の速度に乗算
+        let gameOver = false;
+        let gameStarted = false;
+        let lastObstacleTime = 0;
+        let obstacleInterval = 1000; // 障害物生成間隔 (ms)
+        let animationFrameId;
+        let gameTime = 0; // スコアリングと難易度調整用
+        let lastFrameTime = 0;
+
+        // プレイヤーを描画
+        function drawPlayer() {
+            ctx.fillStyle = player.color;
+            ctx.beginPath();
+            // 船体
+            ctx.rect(player.x - player.width / 2, player.y, player.width, player.height);
+            // コックピット（上部の丸）
+            ctx.arc(player.x, player.y, player.width / 4, Math.PI, 2 * Math.PI, false);
+            ctx.fill();
+
+            // 窓
+            ctx.fillStyle = '#AAAAFF';
+            ctx.beginPath();
+            ctx.arc(player.x, player.y + player.height / 2, player.width / 8, 0, 2 * Math.PI, false);
+            ctx.fill();
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        // 障害物を描画
+        function drawObstacle(obstacle) {
+            ctx.fillStyle = obstacle.color;
+            ctx.beginPath();
+            if (obstacle.type === 'fish') {
+                // シンプルな魚の形
+                ctx.moveTo(obstacle.x - obstacle.width / 2, obstacle.y);
+                ctx.lineTo(obstacle.x + obstacle.width / 2, obstacle.y - obstacle.height / 2);
+                ctx.lineTo(obstacle.x + obstacle.width / 2, obstacle.y + obstacle.height / 2);
+                ctx.closePath();
+            } else { // 'rock' またはデフォルト
+                ctx.arc(obstacle.x, obstacle.y, obstacle.width / 2, 0, 2 * Math.PI);
+            }
+            ctx.fill();
+        }
+
+        // 全ての要素を描画
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // キャンバスをクリア
+            drawPlayer();
+            obstacles.forEach(drawObstacle);
+        }
+
+        // プレイヤーの位置を更新
+        function updatePlayer() {
+            // targetXに滑らかに追従
+            player.x += (player.targetX - player.x) * 0.2;
+
+            // 画面端でクリップ
+            player.x = Math.max(player.width / 2, Math.min(canvas.width - player.width / 2, player.x));
+        }
+
+        // 障害物を生成
+        function generateObstacle() {
+            const minWidth = 20;
+            const maxWidth = 80;
+            const minHeight = 20;
+            const maxHeight = 60;
+            const minSpeed = 2;
+            const maxSpeed = 5;
+
+            const width = Math.random() * (maxWidth - minWidth) + minWidth;
+            const height = Math.random() * (maxHeight - minHeight) + minHeight;
+            const y = Math.random() * (canvas.height * 0.7) + (canvas.height * 0.15); // 上下を少し避ける
+            const speed = (Math.random() * (maxSpeed - minSpeed) + minSpeed) * gameSpeed;
+            const type = Math.random() < 0.7 ? 'fish' : 'rock'; // 魚と岩の比率
+
+            const color = type === 'fish' ?
+                          `hsl(${Math.random() * 360}, 100%, 50%)` : // カラフルな魚
+                          `rgb(${Math.floor(Math.random() * 50) + 50}, ${Math.floor(Math.random() * 50) + 50}, ${Math.floor(Math.random() * 50) + 50})`; // 暗い岩
+
+            obstacles.push({
+                x: canvas.width + width / 2, // 画面右端から出現
+                y: y,
+                width: width,
+                height: height,
+                speed: speed,
+                color: color,
+                type: type
+            });
+        }
+
+        // 衝突判定
+        function checkCollision() {
+            for (let i = 0; i < obstacles.length; i++) {
+                const obs = obstacles[i];
+                if (
+                    player.x - player.width / 2 < obs.x + obs.width / 2 && // プレイヤーの左端が障害物の右端より左
+                    player.x + player.width / 2 > obs.x - obs.width / 2 && // プレイヤーの右端が障害物の左端より右
+                    player.y < obs.y + obs.height / 2 && // プレイヤーの上端が障害物の下端より上
+                    player.y + player.height > obs.y - obs.height / 2 // プレイヤーの下端が障害物の上端より下
+                ) {
+                    gameOver = true;
+                    endGame();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // ゲームの状態を更新
+        function update(deltaTime) {
+            if (gameOver) return;
+
+            // スコアと難易度更新
+            gameTime += deltaTime;
+            score = Math.floor(gameTime / 100);
+            scoreDisplay.textContent = `スコア: ${score}`;
+
+            gameSpeed = 1 + Math.min(gameTime / 45000, 3); // 45秒で速度がx4になる計算 (最大値3は初期値1+2なのでx3に調整)
+            obstacleInterval = Math.max(300, 1000 - Math.floor(gameTime / 100)); // 最大で300msまで短縮
+
+            updatePlayer();
+
+            // 障害物生成
+            if (gameTime - lastObstacleTime > obstacleInterval) {
+                generateObstacle();
+                lastObstacleTime = gameTime;
+            }
+
+            // 障害物更新
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.x -= obs.speed * (deltaTime / (1000 / 60)); // 60FPS基準で速度調整
+                if (obs.x + obs.width / 2 < 0) { // 画面外に出たら削除
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            checkCollision();
+        }
+
+        // ゲームループ
+        function gameLoop(currentTime) {
+            if (gameOver) return;
+
+            const deltaTime = currentTime - lastFrameTime;
+            lastFrameTime = currentTime;
+
+            update(deltaTime);
+            draw();
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // ゲームオーバー処理
+        function endGame() {
+            cancelAnimationFrame(animationFrameId);
+            finalScoreDisplay.textContent = `最終スコア: ${score}`;
+            gameOverDisplay.style.display = 'flex';
+        }
+
+        // ゲーム初期化
+        function initGame() {
+            player.x = canvas.width / 2;
+            player.y = canvas.height - 60;
+            player.targetX = canvas.width / 2;
+            obstacles = [];
+            score = 0;
+            gameSpeed = 1;
+            gameOver = false;
+            gameTime = 0;
+            lastObstacleTime = 0;
+            scoreDisplay.textContent = `スコア: ${score}`;
+            gameOverDisplay.style.display = 'none';
+        }
+
+        // ゲーム開始
+        function startGame() {
+            if (gameStarted) return;
+            gameStarted = true;
+            tapToStartDisplay.style.display = 'none';
+            initGame(); // ゲームの状態をリセット
+            lastFrameTime = performance.now(); // 最初のフレーム時間を設定
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // ゲームリスタート
+        function restartGame() {
+            gameOverDisplay.style.display = 'none';
+            gameStarted = false; // 再度startGameが呼ばれるように
+            startGame();
+        }
+
+        // --- 入力イベントハンドラ ---
+
+        let keys = {
+            left: false,
+            right: false
+        };
+
+        // キーボード入力
+        document.addEventListener('keydown', (e) => {
+            if (gameOver || !gameStarted) return;
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                keys.left = true;
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                keys.right = true;
+            }
+            // キーボード入力でtargetXを更新
+            if (keys.left) player.targetX -= player.speed * 5;
+            if (keys.right) player.targetX += player.speed * 5;
+            player.targetX = Math.max(player.width / 2, Math.min(canvas.width - player.width / 2, player.targetX));
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (gameOver || !gameStarted) return;
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                keys.left = false;
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                keys.right = false;
+            }
+        });
+
+        // マウス/タッチ入力
+        let isDragging = false;
+
+        function handlePointerDown(e) {
+            if (gameOver) {
+                restartGame();
+                return;
+            }
+            if (!gameStarted) {
+                startGame();
+                return;
+            }
+            isDragging = true;
+            let clientX = (e.touches ? e.touches[0].clientX : e.clientX);
+            let containerRect = gameContainer.getBoundingClientRect();
+            player.targetX = (clientX - containerRect.left) * (canvas.width / containerRect.width);
+
+            player.targetX = Math.max(player.width / 2, Math.min(canvas.width - player.width / 2, player.targetX));
+            e.preventDefault(); // デフォルトのスクロールなどを防止
+        }
+
+        function handlePointerMove(e) {
+            if (!isDragging || gameOver || !gameStarted) return;
+            let clientX = (e.touches ? e.touches[0].clientX : e.clientX);
+            let containerRect = gameContainer.getBoundingClientRect();
+            player.targetX = (clientX - containerRect.left) * (canvas.width / containerRect.width);
+
+            player.targetX = Math.max(player.width / 2, Math.min(canvas.width - player.width / 2, player.targetX));
+            e.preventDefault();
+        }
+
+        function handlePointerUp() {
+            isDragging = false;
+        }
+
+        // イベントリスナーの登録
+        gameContainer.addEventListener('mousedown', handlePointerDown);
+        gameContainer.addEventListener('touchstart', handlePointerDown, { passive: false });
+        gameContainer.addEventListener('mousemove', handlePointerMove);
+        gameContainer.addEventListener('touchmove', handlePointerMove, { passive: false });
+        gameContainer.addEventListener('mouseup', handlePointerUp);
+        gameContainer.addEventListener('mouseleave', handlePointerUp);
+        gameContainer.addEventListener('touchend', handlePointerUp);
+        gameContainer.addEventListener('touchcancel', handlePointerUp);
+
+        restartButton.addEventListener('click', restartGame);
+
+        // 初回ゲーム開始ボタン
+        tapToStartDisplay.addEventListener('click', startGame);
+    </script>
+</body>
+</html>
