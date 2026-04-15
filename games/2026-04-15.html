@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>森ゲーム - 2026-04-15</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* スクロールバー非表示 */
+            background-color: #2e4a2e; /* 森の深い緑 */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            color: #fff;
+        }
+        canvas {
+            background-color: #88C070; /* 森の地面の色 */
+            display: block;
+            border: 2px solid #555;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+            max-width: 90vw; /* 画面幅の90%まで */
+            max-height: 90vh; /* 画面高さの90%まで */
+            width: auto; /* 高さに合わせて幅を自動調整 */
+            height: auto; /* 幅に合わせて高さを自動調整 */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Canvasサイズ設定 (固定サイズで、CSSでレスポンシブ対応)
+        canvas.width = 400;
+        canvas.height = 600;
+
+        // ゲーム変数
+        let player;
+        let obstacles;
+        let score;
+        let gameOver;
+        let gameInterval;
+        let obstacleSpawnTimeout; // 障害物生成のsetTimeout ID
+
+        // プレイヤー設定 (リスをイメージ)
+        const PLAYER_WIDTH = 40;
+        const PLAYER_HEIGHT = 40;
+        const PLAYER_SPEED = 5; // 左右移動速度
+        const PLAYER_COLOR = '#A0522D'; // 茶色
+
+        // 障害物設定 (木の実、岩などをイメージ)
+        const OBSTACLE_WIDTH = 30;
+        const OBSTACLE_HEIGHT = 30;
+        const OBSTACLE_COLORS = ['#6B8E23', '#8B4513', '#778899', '#4CAF50']; // 葉っぱ、木の実、岩、草
+        let OBSTACLE_INITIAL_SPEED = 2; // 障害物の初期落下速度
+        const OBSTACLE_SPAWN_INTERVAL_MIN = 800; // ms
+        const OBSTACLE_SPAWN_INTERVAL_MAX = 1500; // ms
+
+        // ゲーム初期化
+        function init() {
+            player = {
+                x: canvas.width / 2 - PLAYER_WIDTH / 2,
+                y: canvas.height - PLAYER_HEIGHT - 20,
+                width: PLAYER_WIDTH,
+                height: PLAYER_HEIGHT,
+                dx: 0 // プレイヤーの移動方向 (キーボード用)
+            };
+            obstacles = [];
+            score = 0;
+            gameOver = false;
+            OBSTACLE_INITIAL_SPEED = 2; // 速度リセット
+
+            if (gameInterval) clearInterval(gameInterval);
+            if (obstacleSpawnTimeout) clearTimeout(obstacleSpawnTimeout);
+
+            gameInterval = setInterval(gameLoop, 1000 / 60); // 60fps
+            spawnObstacleDelayed(); // 初めての障害物生成
+        }
+
+        // プレイヤー描画 (簡単なリスの形)
+        function drawPlayer() {
+            ctx.fillStyle = PLAYER_COLOR;
+            // 体
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            // 耳 (簡易的)
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(player.x + player.width / 3, player.y - player.height / 3);
+            ctx.lineTo(player.x + player.width / 3 * 2, player.y - player.height / 3);
+            ctx.lineTo(player.x + player.width, player.y);
+            ctx.fill();
+        }
+
+        // 障害物描画
+        function drawObstacles() {
+            obstacles.forEach(obstacle => {
+                ctx.fillStyle = obstacle.color;
+                // 木の実（丸）と岩・葉っぱ（四角）を混ぜて表現
+                if (obstacle.type === 'round') {
+                    ctx.beginPath();
+                    ctx.arc(obstacle.x + obstacle.width / 2, obstacle.y + obstacle.height / 2, obstacle.width / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                } else { // 'square'
+                    ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                }
+            });
+        }
+
+        // スコア描画
+        function drawScore() {
+            ctx.fillStyle = 'black';
+            ctx.font = '24px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Score: ${score}`, 10, 30);
+        }
+
+        // ゲームオーバー描画
+        function drawGameOver() {
+            ctx.fillStyle = 'red';
+            ctx.font = '48px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+
+            ctx.fillStyle = 'black';
+            ctx.font = '24px Arial';
+            ctx.fillText(`Final Score: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
+            ctx.fillText('Tap or Click to Restart', canvas.width / 2, canvas.height / 2 + 60);
+        }
+
+        // 障害物生成
+        function spawnObstacle() {
+            const x = Math.random() * (canvas.width - OBSTACLE_WIDTH);
+            const color = OBSTACLE_COLORS[Math.floor(Math.random() * OBSTACLE_COLORS.length)];
+            const type = Math.random() < 0.5 ? 'round' : 'square'; // 丸い木の実か、四角い岩/葉っぱか
+
+            obstacles.push({
+                x: x,
+                y: -OBSTACLE_HEIGHT, // 画面上部から出現
+                width: OBSTACLE_WIDTH,
+                height: OBSTACLE_HEIGHT,
+                speed: OBSTACLE_INITIAL_SPEED + Math.floor(score / 15) * 0.5, // 15点ごとに速度アップ
+                color: color,
+                type: type
+            });
+        }
+
+        // 障害物生成を遅延させて行う
+        function spawnObstacleDelayed() {
+            obstacleSpawnTimeout = setTimeout(() => {
+                if (!gameOver) {
+                    spawnObstacle();
+                    // スコアに応じて生成間隔を短くする (最小200ms)
+                    const spawnInterval = Math.max(200, OBSTACLE_SPAWN_INTERVAL_MIN + Math.random() * (OBSTACLE_SPAWN_INTERVAL_MAX - OBSTACLE_SPAWN_INTERVAL_MIN) - score * 5);
+                    spawnObstacleDelayed(); // 次の障害物を生成するための再帰呼び出し
+                }
+            }, spawnInterval);
+        }
+
+        // 衝突判定 (AABB: Axis-Aligned Bounding Box)
+        function checkCollision(obj1, obj2) {
+            return obj1.x < obj2.x + obj2.width &&
+                   obj1.x + obj1.width > obj2.x &&
+                   obj1.y < obj2.y + obj2.height &&
+                   obj1.y + obj1.height > obj2.y;
+        }
+
+        // ゲームループ
+        function gameLoop() {
+            if (gameOver) {
+                drawGameOver();
+                return;
+            }
+
+            // 画面クリア
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // プレイヤー更新
+            player.x += player.dx;
+            // 画面端での制限
+            if (player.x < 0) player.x = 0;
+            if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+
+            // 障害物更新
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obstacle = obstacles[i];
+                obstacle.y += obstacle.speed;
+
+                // 画面外に出たら削除し、スコア加算
+                if (obstacle.y > canvas.height) {
+                    obstacles.splice(i, 1);
+                    score++;
+                }
+
+                // 衝突判定
+                if (checkCollision(player, obstacle)) {
+                    gameOver = true;
+                    clearInterval(gameInterval);
+                    clearTimeout(obstacleSpawnTimeout);
+                }
+            }
+
+            // 描画
+            drawPlayer();
+            drawObstacles();
+            drawScore();
+        }
+
+        // イベントリスナー
+
+        // PC: キーボード操作
+        document.addEventListener('keydown', (e) => {
+            if (gameOver) return;
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                player.dx = -PLAYER_SPEED;
+            } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                player.dx = PLAYER_SPEED;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            // 左右どちらかのキーが離されたら停止
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A' ||
+                e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                player.dx = 0;
+            }
+        });
+
+        // スマホ: タッチ操作 (プレイヤーのX座標をタッチ位置に追従)
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault(); // スクロール防止
+            if (gameOver) return;
+
+            const touch = e.touches[0];
+            const rect = canvas.getBoundingClientRect();
+            // CSSでcanvasが拡大・縮小されている場合を考慮してスケールを計算
+            const scaleX = canvas.width / rect.width;
+            const touchX = (touch.clientX - rect.left) * scaleX;
+            
+            player.x = touchX - player.width / 2; // プレイヤーの中心をタッチ位置に合わせる
+        }, { passive: false }); // preventDefaultを使用するためpassive: falseを設定
+
+        // ゲームオーバー中のクリック/タップでリスタート
+        canvas.addEventListener('click', () => {
+            if (gameOver) {
+                init();
+            }
+        });
+        canvas.addEventListener('touchstart', (e) => {
+            if (gameOver) {
+                init();
+                e.preventDefault(); // リスタート時の意図しない動作を防ぐ
+            }
+        }, { passive: false });
+
+
+        // ゲーム開始
+        init();
+    </script>
+</body>
+</html>
