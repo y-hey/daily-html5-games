@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>海賊ゲーム - 2026-04-16</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden; /* スクロールバー非表示 */
+            background-color: #333; /* Canvas外の背景色 */
+            font-family: Arial, sans-serif;
+            -webkit-user-select: none; /* iOS Safari */
+            -moz-user-select: none; /* Firefox */
+            -ms-user-select: none; /* Internet Explorer/Edge */
+            user-select: none; /* 標準 */
+            touch-action: manipulation; /* モバイルでのデフォルトのタッチジェスチャー（ズーム等）を抑制 */
+        }
+        canvas {
+            display: block; /* Canvas下の余白を削除 */
+            background-color: #87CEEB; /* スカイブルー、海のイメージ */
+            cursor: none; /* マウスカーソルを非表示にして、自機をカーソル代わりに */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // グローバル変数
+        let canvas, ctx;
+        let player;
+        let cannonballs;
+        let score;
+        let gameRunning;
+        let lastFrameTime; // 最後のフレーム描画時刻 (performance.now())
+        let lastCannonballTime; // 最後の砲弾生成時刻 (performance.now())
+        let cannonballInterval; // 砲弾の生成間隔 (ms)
+        let currentCannonballSpeed; // 現在の砲弾の落下速度
+        let restartButtonBounds; // ゲームオーバー時のリスタートボタンの描画範囲
+
+        // 定数
+        const PLAYER_HEIGHT_FROM_BOTTOM = 60; // プレイヤーが画面下端から何px上に表示されるか
+        const PLAYER_WIDTH = 60;
+        const PLAYER_HEIGHT = 40;
+        const PLAYER_COLOR = '#A0522D'; // 茶色 (海賊船の色)
+        const SAIL_COLOR = '#f0f0f0'; // 白い帆
+
+        const CANNONBALL_RADIUS = 10;
+        const CANNONBALL_COLOR = '#333333'; // 黒っぽい色
+
+        const INITIAL_CANNONBALL_INTERVAL = 1500; // 砲弾の初期生成間隔 (ms)
+        const MIN_CANNONBALL_INTERVAL = 400;     // 砲弾の最小生成間隔 (ms)
+        const INTERVAL_DECREASE_FACTOR = 0.995; // 砲弾生成間隔の減少ファクター
+
+        const INITIAL_CANNONBALL_SPEED = 2;      // 砲弾の初期速度
+        const CANNONBALL_SPEED_INCREASE_RATE = 0.005; // 1秒あたりの速度増加量
+        const CANNONBALL_RANDOM_SPEED_VARIATION = 1.5; // 砲弾の速度のランダム性
+
+        // 初期化関数
+        window.onload = init;
+        // ウィンドウサイズ変更時の処理
+        window.addEventListener('resize', resizeCanvas);
+
+        function init() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // イベントリスナー設定
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('touchmove', handleTouchMove, { passive: false }); // passive: false で preventDefault を有効に
+            canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+            canvas.addEventListener('mouseup', handleClick);
+            canvas.addEventListener('touchend', handleClick);
+
+            resizeCanvas(); // Canvasサイズを初期設定
+            resetGame();    // ゲーム状態を初期化
+            gameLoop(performance.now()); // ゲームループを開始
+        }
+
+        // Canvasサイズ変更時の処理
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            // プレイヤー位置を画面下部に固定し、横方向は現在位置を維持しつつ画面内に収める
+            if (player) {
+                player.y = canvas.height - player.height - PLAYER_HEIGHT_FROM_BOTTOM;
+                player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+            }
+        }
+
+        // ゲーム状態をリセットする関数
+        function resetGame() {
+            player = {
+                x: canvas.width / 2 - PLAYER_WIDTH / 2, // 画面中央
+                y: canvas.height - PLAYER_HEIGHT - PLAYER_HEIGHT_FROM_BOTTOM, // 画面下部に配置
+                width: PLAYER_WIDTH,
+                height: PLAYER_HEIGHT,
+                color: PLAYER_COLOR
+            };
+            cannonballs = []; // 砲弾配列をクリア
+            score = 0;        // スコアをリセット
+            gameRunning = true; // ゲーム実行中フラグ
+            lastFrameTime = performance.now(); // フレーム時間を初期化
+            lastCannonballTime = lastFrameTime; // 砲弾生成時間を初期化
+            cannonballInterval = INITIAL_CANNONBALL_INTERVAL; // 砲弾生成間隔を初期化
+            currentCannonballSpeed = INITIAL_CANNONBALL_SPEED; // 砲弾速度を初期化
+        }
+
+        // ゲームループ
+        function gameLoop(currentTime) {
+            if (!gameRunning) {
+                drawGameOver(); // ゲームオーバー画面を描画
+                return; // ゲームが終了している場合はループを停止
+            }
+
+            const deltaTime = (currentTime - lastFrameTime) / 1000; // 前フレームからの経過時間 (秒単位)
+            lastFrameTime = currentTime;
+
+            update(deltaTime, currentTime); // ゲームの状態を更新
+            draw(); // 全ての要素を描画
+
+            requestAnimationFrame(gameLoop); // 次のフレームを要求
+        }
+
+        // ゲームの状態を更新する関数
+        function update(deltaTime, currentTime) {
+            score += deltaTime; // スコアを時間経過で加算
+
+            // 砲弾生成の管理
+            if (currentTime - lastCannonballTime > cannonballInterval) {
+                generateCannonball();
+                lastCannonballTime = currentTime;
+                // 時間経過で砲弾生成間隔を短く、速度を速くして難易度を上げる
+                cannonballInterval = Math.max(MIN_CANNONBALL_INTERVAL, cannonballInterval * INTERVAL_DECREASE_FACTOR);
+                currentCannonballSpeed += CANNONBALL_SPEED_INCREASE_RATE;
+            }
+
+            // 各砲弾の更新と衝突判定
+            for (let i = cannonballs.length - 1; i >= 0; i--) {
+                let cb = cannonballs[i];
+                cb.y += cb.speed * deltaTime * 60; // 60fps基準で速度調整
+
+                // プレイヤーと砲弾の衝突判定
+                if (checkCollision(player, cb)) {
+                    gameRunning = false; // 衝突したらゲームオーバー
+                    break;
+                }
+
+                // 画面外に出た砲弾を配列から削除
+                if (cb.y - cb.radius > canvas.height) {
+                    cannonballs.splice(i, 1);
+                }
+            }
+        }
+
+        // 全てのゲーム要素を描画する関数
+        function draw() {
+            // 背景クリア (海の色)
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#87CEEB';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            drawPlayer();
+            drawCannonballs();
+            drawScore();
+        }
+
+        // プレイヤー (海賊船) を描画する関数
+        function drawPlayer() {
+            // 船体
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            // 帆
+            ctx.fillStyle = SAIL_COLOR;
+            ctx.beginPath();
+            ctx.moveTo(player.x + player.width / 2, player.y - 30); // 帆の先端
+            ctx.lineTo(player.x + player.width / 4, player.y);     // 帆の左下
+            ctx.lineTo(player.x + player.width * 3 / 4, player.y); // 帆の右下
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // 新しい砲弾を生成する関数
+        function generateCannonball() {
+            const x = Math.random() * (canvas.width - CANNONBALL_RADIUS * 2) + CANNONBALL_RADIUS; // 画面幅内でランダムなX座標
+            const y = -CANNONBALL_RADIUS; // 画面上部から出現
+            // 速度に少しランダム性を加える
+            cannonballs.push({
+                x: x,
+                y: y,
+                radius: CANNONBALL_RADIUS,
+                speed: currentCannonballSpeed + Math.random() * CANNONBALL_RANDOM_SPEED_VARIATION
+            });
+        }
+
+        // 砲弾を描画する関数
+        function drawCannonballs() {
+            ctx.fillStyle = CANNONBALL_COLOR;
+            cannonballs.forEach(cb => {
+                ctx.beginPath();
+                ctx.arc(cb.x, cb.y, cb.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        // スコアを描画する関数
+        function drawScore() {
+            ctx.fillStyle = '#333333';
+            ctx.font = '24px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Score: ${Math.floor(score)}`, 10, 30);
+        }
+
+        // ゲームオーバー画面を描画する関数
+        function drawGameOver() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; // 半透明の黒
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = '48px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 50);
+
+            ctx.font = '30px Arial';
+            ctx.fillText(`Your Score: ${Math.floor(score)}`, canvas.width / 2, canvas.height / 2);
+
+            // リスタートボタンを描画
+            const buttonWidth = 200;
+            const buttonHeight = 60;
+            const buttonX = canvas.width / 2 - buttonWidth / 2;
+            const buttonY = canvas.height / 2 + 50;
+
+            ctx.fillStyle = '#4CAF50'; // 緑色
+            ctx.fillRect(buttonX, buttonY, buttonWidth, buttonHeight);
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = '28px Arial';
+            ctx.fillText('RESTART', canvas.width / 2, buttonY + buttonHeight / 2 + 10);
+
+            // リスタートボタンの範囲を保存 (クリック判定用)
+            restartButtonBounds = { x: buttonX, y: buttonY, width: buttonWidth, height: buttonHeight };
+        }
+
+        // 衝突判定: 円 (砲弾) と矩形 (プレイヤー)
+        function checkCollision(rect, circle) {
+            // 円の中心から矩形に最も近い点を計算
+            let testX = circle.x;
+            let testY = circle.y;
+
+            if (circle.x < rect.x) testX = rect.x;
+            else if (circle.x > rect.x + rect.width) testX = rect.x + rect.width;
+
+            if (circle.y < rect.y) testY = rect.y;
+            else if (circle.y > rect.y + rect.height) testY = rect.y + rect.height;
+
+            // 最も近い点と円の中心間の距離を計算
+            let distX = circle.x - testX;
+            let distY = circle.y - testY;
+            let distance = Math.sqrt((distX * distX) + (distY * distY));
+
+            // 距離が円の半径より小さい場合、衝突している
+            return distance <= circle.radius;
+        }
+
+        // マウス移動時のハンドラ (PC操作)
+        function handleMouseMove(e) {
+            if (gameRunning) {
+                // マウス位置に合わせてプレイヤーを移動
+                player.x = e.clientX - player.width / 2;
+                // プレイヤーが画面外に出ないように制限
+                player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+            }
+        }
+
+        // タッチ移動時のハンドラ (モバイル操作)
+        function handleTouchMove(e) {
+            if (gameRunning) {
+                e.preventDefault(); // スクロールなどのデフォルト動作を防止
+                // タッチ位置に合わせてプレイヤーを移動
+                player.x = e.touches[0].clientX - player.width / 2;
+                // プレイヤーが画面外に出ないように制限
+                player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+            }
+        }
+
+        // タッチ開始時のハンドラ (モバイル操作)
+        function handleTouchStart(e) {
+            if (gameRunning) {
+                e.preventDefault(); // デフォルト動作を防止 (e.g., 長押しによるメニュー表示)
+                // タッチ開始時にもプレイヤーを移動 (タッチムーブと共通化)
+                player.x = e.touches[0].clientX - player.width / 2;
+                player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+            }
+        }
+
+        // クリック/タップ時のハンドラ (リスタートボタン用)
+        function handleClick(e) {
+            if (!gameRunning && restartButtonBounds) {
+                let clientX, clientY;
+                if (e.type === 'mouseup') { // PCのマウスクリック
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                } else if (e.type === 'touchend' && e.changedTouches.length > 0) { // モバイルのタッチ終了
+                    clientX = e.changedTouches[0].clientX;
+                    clientY = e.changedTouches[0].clientY;
+                } else {
+                    return; // 認識できないイベントの場合
+                }
+
+                // クリック/タップがリスタートボタンの範囲内か判定
+                if (clientX > restartButtonBounds.x && clientX < restartButtonBounds.x + restartButtonBounds.width &&
+                    clientY > restartButtonBounds.y && clientY < restartButtonBounds.y + restartButtonBounds.height) {
+                    resetGame();        // ゲーム状態をリセット
+                    gameLoop(performance.now()); // ゲームループを再開
+                }
+            }
+        }
+    </script>
+</body>
+</html>
