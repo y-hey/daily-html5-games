@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>工場ゲーム - 2026-04-17</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #2c3e50; /* 濃い青灰色 */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #ecf0f1;
+        }
+        canvas {
+            display: block;
+            background-color: #34495e; /* 暗い青灰色 */
+            border: 2px solid #7f8c8d; /* 灰色 */
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+            touch-action: none; /* タッチイベントのデフォルト動作を無効化 */
+            width: 100vw; /* 画面幅いっぱいに */
+            height: 100vh; /* 画面高さもいっぱいに */
+            object-fit: contain; /* アスペクト比を維持して表示、余白はbodyの背景色に */
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 仮想的な画面サイズ。このサイズでゲームロジックを記述し、描画時にスケールする
+        const BASE_WIDTH = 375;
+        const BASE_HEIGHT = 667;
+
+        let scale = 1; // スケーリングファクター
+        let offsetX = 0; // オフセットX
+        let offsetY = 0; // オフセットY
+
+        let gameState = 'playing'; // 'playing', 'gameOver'
+        let score = 0;
+        let lives = 3;
+        let gameTimer = 0; // ゲーム経過時間 (ms)
+        let lastTimestamp = 0; // 最後のタイムスタンプ
+
+        const PLAYER_WIDTH = 80;
+        const PLAYER_HEIGHT = 20;
+        const PLAYER_SPEED = 5;
+
+        let player = {
+            x: BASE_WIDTH / 2 - PLAYER_WIDTH / 2,
+            y: BASE_HEIGHT - PLAYER_HEIGHT - 30, // 画面下部から少し上
+            width: PLAYER_WIDTH,
+            height: PLAYER_HEIGHT,
+            dx: 0
+        };
+
+        let products = [];
+        const PRODUCT_SIZE = 30;
+        const INITIAL_PRODUCT_SPEED = 2;
+        const MAX_PRODUCT_SPEED = 8;
+        let productSpawnInterval = 1000; // ms
+        let lastProductSpawnTime = 0;
+
+        // キーボード入力の状態
+        let keys = {
+            left: false,
+            right: false
+        };
+
+        // タッチ入力の状態
+        let touchMoveDirection = 0; // -1: left, 1: right, 0: none
+
+        // ==================== Utility Functions ====================
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(value, max));
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            // 仮想サイズに合わせてスケールを計算
+            scale = Math.min(canvas.width / BASE_WIDTH, canvas.height / BASE_HEIGHT);
+            offsetX = (canvas.width - BASE_WIDTH * scale) / 2;
+            offsetY = (canvas.height - BASE_HEIGHT * scale) / 2;
+        }
+
+        // ==================== Game Objects Drawing ====================
+        function drawPlayer() {
+            ctx.fillStyle = '#3498db'; // 青色
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            // アームの先端部分
+            ctx.fillStyle = '#2980b9';
+            ctx.fillRect(player.x + player.width * 0.25, player.y - player.height * 0.5, player.width * 0.5, player.height * 0.5);
+        }
+
+        function drawProduct(product) {
+            ctx.beginPath();
+            if (product.type === 'good') {
+                ctx.fillStyle = '#2ecc71'; // 緑色
+                // 歯車のような形を描画
+                const teethCount = 8;
+                const innerRadius = product.width / 4;
+                const outerRadius = product.width / 2;
+                for (let i = 0; i < teethCount; i++) {
+                    const angle = (i / teethCount) * Math.PI * 2;
+                    const nextAngle = ((i + 0.5) / teethCount) * Math.PI * 2;
+                    ctx.lineTo(product.x + product.width / 2 + Math.cos(angle) * outerRadius, product.y + product.height / 2 + Math.sin(angle) * outerRadius);
+                    ctx.lineTo(product.x + product.width / 2 + Math.cos(nextAngle) * innerRadius, product.y + product.height / 2 + Math.sin(nextAngle) * innerRadius);
+                }
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = '#27ae60';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            } else {
+                ctx.fillStyle = '#e74c3c'; // 赤色
+                // 欠けた歯車のような形を描画
+                ctx.arc(product.x + product.width / 2, product.y + product.height / 2, product.width / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#c0392b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                // 欠けた部分を背景色で描画して欠けているように見せる
+                ctx.fillStyle = '#34495e'; 
+                ctx.beginPath();
+                ctx.moveTo(product.x + product.width / 2, product.y + product.height / 2);
+                ctx.arc(product.x + product.width / 2, product.y + product.height / 2, product.width / 2, Math.PI * 0.25, Math.PI * 0.75);
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+
+        function drawBackground() {
+            // 工場の壁
+            ctx.fillStyle = '#7f8c8d'; // 明るい灰色
+            ctx.fillRect(0, 0, BASE_WIDTH, BASE_HEIGHT);
+
+            // コンベアベルト
+            ctx.fillStyle = '#556270'; // 暗い灰色
+            ctx.fillRect(0, player.y + player.height + 10, BASE_WIDTH, BASE_HEIGHT - (player.y + player.height + 10));
+
+            // コンベアのローラー
+            ctx.fillStyle = '#8f9ba6';
+            for (let i = 0; i < BASE_WIDTH / 40; i++) {
+                ctx.beginPath();
+                ctx.arc(20 + i * 40, BASE_HEIGHT - 20, 10, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function drawUI() {
+            ctx.fillStyle = '#ecf0f1'; // 白っぽい色
+            ctx.font = '24px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText(`Score: ${score}`, 10, 30);
+            ctx.textAlign = 'right';
+            ctx.fillText(`Lives: ${lives}`, BASE_WIDTH - 10, 30);
+
+            if (gameState === 'gameOver') {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, BASE_HEIGHT / 2 - 80, BASE_WIDTH, 160);
+
+                ctx.fillStyle = '#ecf0f1';
+                ctx.font = '40px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', BASE_WIDTH / 2, BASE_HEIGHT / 2 - 20);
+                ctx.font = '24px Arial';
+                ctx.fillText(`Final Score: ${score}`, BASE_WIDTH / 2, BASE_HEIGHT / 2 + 20);
+
+                // リスタートボタン
+                const buttonWidth = 150;
+                const buttonHeight = 50;
+                const buttonX = BASE_WIDTH / 2 - buttonWidth / 2;
+                const buttonY = BASE_HEIGHT / 2 + 50;
+                ctx.fillStyle = '#27ae60'; // 緑
+                ctx.fillRect(buttonX, buttonY, buttonWidth, buttonHeight);
+                ctx.fillStyle = '#ecf0f1';
+                ctx.font = '20px Arial';
+                ctx.fillText('RESTART', BASE_WIDTH / 2, buttonY + buttonHeight / 2 + 7);
+            }
+        }
+
+        // ==================== Game Logic ====================
+        function spawnProduct(timestamp) {
+            if (timestamp - lastProductSpawnTime > productSpawnInterval) {
+                // 時間経過でbadの確率と速度を上げる
+                const badProductChance = 0.3 + Math.min(0.3, gameTimer / 60000 / 2); // 2分で最大60%
+                const type = Math.random() < badProductChance ? 'bad' : 'good'; 
+                const speed = INITIAL_PRODUCT_SPEED + gameTimer / 30000 * 0.5; // 30秒ごとに速度0.5増加
+                products.push({
+                    x: Math.random() * (BASE_WIDTH - PRODUCT_SIZE),
+                    y: -PRODUCT_SIZE, // 画面上部外から
+                    width: PRODUCT_SIZE,
+                    height: PRODUCT_SIZE,
+                    type: type,
+                    speed: clamp(speed, INITIAL_PRODUCT_SPEED, MAX_PRODUCT_SPEED)
+                });
+                lastProductSpawnTime = timestamp;
+
+                // 製品生成間隔も時間経過で短縮
+                productSpawnInterval = clamp(1000 - gameTimer / 300, 300, 1000); // 30秒で100ms短縮、最小300ms
+            }
+        }
+
+        function updatePlayer(deltaTime) {
+            let moveAmount = 0;
+            if (keys.left || touchMoveDirection === -1) {
+                moveAmount = -PLAYER_SPEED * (deltaTime / (1000/60)); // 60fps基準での移動量
+            } else if (keys.right || touchMoveDirection === 1) {
+                moveAmount = PLAYER_SPEED * (deltaTime / (1000/60));
+            }
+            player.x += moveAmount;
+            player.x = clamp(player.x, 0, BASE_WIDTH - player.width);
+        }
+
+        function updateProducts(deltaTime) {
+            for (let i = products.length - 1; i >= 0; i--) {
+                let product = products[i];
+                product.y += product.speed * (deltaTime / (1000/60)); // 60fps基準での落下量
+
+                // 衝突判定 (プレイヤーと製品)
+                if (
+                    product.y + product.height >= player.y &&
+                    product.y <= player.y + player.height &&
+                    product.x + product.width >= player.x &&
+                    product.x <= player.x + player.width
+                ) {
+                    if (product.type === 'good') {
+                        score++;
+                    } else { // product.type === 'bad'
+                        lives--;
+                    }
+                    products.splice(i, 1); // 衝突したら製品を消す
+                }
+                // 画面外判定
+                else if (product.y > BASE_HEIGHT) {
+                    // 良い製品が落ちたらライフ減少、悪い製品が落ちてもライフ減少（避けるべきだったため）
+                    lives--; 
+                    products.splice(i, 1);
+                }
+
+                if (lives <= 0) {
+                    gameState = 'gameOver';
+                    cancelAnimationFrame(animationFrameId);
+                    break;
+                }
+            }
+        }
+
+        function update(timestamp) {
+            const deltaTime = timestamp - lastTimestamp;
+            lastTimestamp = timestamp;
+            
+            if (gameState === 'playing') {
+                gameTimer += deltaTime;
+                updatePlayer(deltaTime);
+                spawnProduct(timestamp);
+                updateProducts(deltaTime);
+            }
+        }
+
+        function draw() {
+            // スケーリングとオフセットを適用
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+
+            ctx.clearRect(0, 0, BASE_WIDTH, BASE_HEIGHT); // 仮想キャンバスをクリア
+
+            drawBackground();
+            drawPlayer();
+            products.forEach(drawProduct);
+            drawUI();
+
+            ctx.restore(); // スケーリングとオフセットを元に戻す
+        }
+
+        let animationFrameId;
+        function gameLoop(timestamp) {
+            update(timestamp);
+            draw();
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        function initGame() {
+            score = 0;
+            lives = 3;
+            gameTimer = 0;
+            products = [];
+            productSpawnInterval = 1000;
+            lastProductSpawnTime = 0;
+            gameState = 'playing';
+            keys = { left: false, right: false };
+            touchMoveDirection = 0;
+            lastTimestamp = performance.now(); // 最初のタイムスタンプを初期化
+
+            // 既存のアニメーションフレームがあればキャンセル
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // ==================== Event Listeners ====================
+        window.addEventListener('resize', resizeCanvas);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                keys.left = true;
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                keys.right = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a') {
+                keys.left = false;
+            } else if (e.key === 'ArrowRight' || e.key === 'd') {
+                keys.right = false;
+            }
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // デフォルトのスクロールなどを防止
+            const touchX = e.touches[0].clientX;
+            const touchY = e.touches[0].clientY;
+
+            // スケーリングとオフセットを考慮したタッチ座標に変換
+            const scaledTouchX = (touchX - offsetX) / scale;
+            const scaledTouchY = (touchY - offsetY) / scale;
+
+            if (gameState === 'gameOver') {
+                // リスタートボタンの領域判定
+                const buttonWidth = 150;
+                const buttonHeight = 50;
+                const buttonX = BASE_WIDTH / 2 - buttonWidth / 2;
+                const buttonY = BASE_HEIGHT / 2 + 50;
+
+                if (
+                    scaledTouchX >= buttonX &&
+                    scaledTouchX <= buttonX + buttonWidth &&
+                    scaledTouchY >= buttonY &&
+                    scaledTouchY <= buttonY + buttonHeight
+                ) {
+                    initGame();
+                }
+            } else if (gameState === 'playing') {
+                // 画面の左右半分で移動方向を決定
+                if (scaledTouchX < BASE_WIDTH / 2) {
+                    touchMoveDirection = -1; // 左
+                } else {
+                    touchMoveDirection = 1; // 右
+                }
+            }
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            touchMoveDirection = 0; // タッチ終了で移動停止
+        });
+
+        canvas.addEventListener('touchcancel', (e) => {
+            e.preventDefault();
+            touchMoveDirection = 0; // タッチキャンセルで移動停止
+        });
+
+
+        // DOMContentLoadedを待って初期化
+        window.onload = () => {
+            resizeCanvas();
+            initGame();
+        };
+    </script>
+</body>
+</html>
